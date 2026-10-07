@@ -58,8 +58,15 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Read characteristic values
-    ReadValues,
+    /// Read characteristic values on non-SIG services (lists length + preview only)
+    ReadValues {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: Option<String>,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+    },
     /// Probe DFU surface
     Dfu,
     /// Diagnose the local BLE environment
@@ -125,7 +132,7 @@ impl Command {
             Command::Scan { .. } => ("scan", 7),
             Command::Analyze { .. } => ("analyze", 11),
             Command::ProbeWrites { .. } => ("probe-writes", 8),
-            Command::ReadValues => ("read-values", 9),
+            Command::ReadValues { .. } => ("read-values", 9),
             Command::Dfu => ("dfu", 10),
             Command::Doctor => ("doctor", 4),
             Command::Mcp => ("mcp", 12),
@@ -434,6 +441,48 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("probe-writes: {e}\n  fix: {}", e.remediation());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::ReadValues { target, timeout } = &cli.command {
+        let Some(target) = target else {
+            eprintln!("read-values: --target is required");
+            std::process::exit(1);
+        };
+        eprintln!(
+            "read-values: reading can change device state (scope: own hardware or written \
+             authorization only). SIG services and firmware/DFU characteristics are skipped."
+        );
+        use crate::radio::{
+            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+        };
+        let dur = std::time::Duration::from_secs(*timeout);
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let devs = BtleplugCentral.scan(dur).await?;
+                let d = select_target_device(&devs, target)?.clone();
+                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let chars = crate::probe::read::read_chars(&c.services().await?);
+                Ok::<_, crate::error::BleError>(crate::probe::read::read_values(&c, &chars).await)
+            })
+        });
+        match res {
+            Ok(results) => {
+                use crate::probe::read::ReadOutcome::*;
+                for r in &results {
+                    match &r.outcome {
+                        Value { len, preview } => {
+                            println!("  {} ({}) len={len} \"{preview}\"", r.uuid, r.service_uuid)
+                        }
+                        Skipped(why) => println!("  {} skipped: {why}", r.uuid),
+                        Error(e) => println!("  {} read error: {e}", r.uuid),
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("read-values: {e}\n  fix: {}", e.remediation());
                 std::process::exit(1);
             }
         }
