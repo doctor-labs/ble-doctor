@@ -5,13 +5,19 @@ Run them when the hardware is available, then tick the box.
 
 Format: `[ ] #<issue> — <what> — <steps> — <hardware> — <expected>`
 
+> **Pi live run 2026-10-07 (see `ble-ctf-validation.md`):** `doctor` + `scan` pass live on Linux; the
+> ESP32 `BLECTF_1CBE` is discovered. Every **connection-dependent** test (#6, #8, #10 live, #15, #16,
+> #17, #18, #20) was attempted and is **BLOCKED by the kernel 6.18 `le-connection-abort-by-local`
+> regression** (bluez#2503) — not a ble-doctor bug (the tool surfaced it as a clean typed error).
+> Unblock with a Linux host on kernel ≤6.12 or a different-chipset dongle.
+
 - [ ] #25 — Injection fuzzing on nRF52 firmware — run fuzz campaign against test firmware — nRF52 dev board — crashes/anomalies are detected and reported
-- [ ] Bumble+vhci integration on the Pi self-hosted runner (validate in #13)
+- [ ] Bumble+vhci integration — BLOCKED on this Pi: `hci_vhci` is not built into kernel 6.18.50+rpt-rpi-2712 (no CONFIG_BT_HCIVHCI). Needs a kernel with the module, or a different Linux host.
 - [x] macOS CoreBluetooth manual smoke (cannot virtualize) — done 2026-10-07: `doctor` clean, `scan` discovered real advertisers (names + RSSI) via CoreBluetooth
 - [ ] Windows WinRT manual smoke (cannot virtualize) — needs a Windows host
 - [ ] #11 — SMP pairing extraction from a real capture — provide a btsnoop with an SMP pairing exchange — needs a capture — expected: classify_pairing_method returns the right method
-- [x] #5 — live scan against a real/virtual target — done 2026-10-07 on macOS: `ble-doctor scan` discovered real advertisers with advertised names + RSSI. (Linux/vhci path still pending in #13.)
-- [~] #4 — live doctor run on each OS — macOS DONE 2026-10-07 (clean ordered report, no raw OS error); Linux + Windows still pending on those hosts
+- [x] #5 — live scan — done 2026-10-07 on macOS (CoreBluetooth) AND the Pi/Linux (BlueZ): discovered the ESP32 `BLECTF_1CBE` (34:86:5D:FC:1C:BE) by advertised name.
+- [~] #4 — live doctor — macOS + Linux(Pi) DONE 2026-10-07 (clean ordered report, correct capability verdicts, no raw OS error); Windows still pending
 - [ ] #15 — live L2CAP ATT channel open on Linux — run on a Linux host with CAP_NET_RAW against a BLE peer — needs Linux + adapter — expected: channel opens, MTU response parsed
 - [ ] #16 — exact MTU=444 live vs ESP32 ble_ctf — on a Linux host (kernel <=6.12) with a USB dongle, request MTU 444 against the ESP32 and confirm negotiated==444 — needs Linux + dongle + ESP32 — expected: flag 16 solved
 - [ ] #13 — register the Pi as a self-hosted Linux runner (labels: self-hosted,linux,bluetooth), install bumble + hci_vhci, enable the integration-vhci job (repo variable VHCI_RUNNER=true), and confirm it runs at least one Bumble+vhci test green — needs the Pi — expected: integration job passes
