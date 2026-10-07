@@ -8,6 +8,7 @@ pub mod cli;
 pub mod ctf;
 pub mod doctor;
 pub mod error;
+pub mod fingerprint;
 pub mod gatt;
 pub mod handoff;
 pub mod mcp;
