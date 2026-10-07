@@ -33,6 +33,12 @@ pub enum Command {
         /// Write a SARIF 2.1.0 report to this file (needs --target)
         #[arg(long, requires = "target")]
         sarif: Option<std::path::PathBuf>,
+        /// Diff findings against a saved `--json` report; exit 3 if NEW failures reach --fail-on
+        #[arg(long, requires = "target")]
+        baseline: Option<std::path::PathBuf>,
+        /// Severity gate for new failures (with --baseline)
+        #[arg(long, default_value = "high", value_parser = ["info", "low", "medium", "high"], requires = "baseline")]
+        fail_on: String,
     },
     /// Analyze a capture or device
     Analyze {
@@ -220,10 +226,24 @@ pub fn run(cli: Cli) {
         timeout,
         json,
         sarif,
+        baseline,
+        fail_on,
         ..
     } = &cli.command
     {
         use crate::radio::{select_target_device, BtleplugCentral, Central};
+        let base = match baseline.as_deref().map(crate::baseline::load).transpose() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("scan: {e}");
+                std::process::exit(1);
+            }
+        };
+        let gate = |checks: &[crate::checks::CheckResult]| -> bool {
+            let sev = crate::baseline::parse_severity(fail_on).expect("clap-validated");
+            base.as_ref()
+                .is_some_and(|b| crate::baseline::report_and_gate(checks, b, sev))
+        };
         let dur = std::time::Duration::from_secs(*timeout);
         let res = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(BtleplugCentral.scan(dur))
@@ -270,6 +290,9 @@ pub fn run(cli: Cli) {
                                     }
                                     if *json {
                                         println!("{}", crate::report::to_json(&checks));
+                                        if gate(&checks) {
+                                            std::process::exit(crate::baseline::EXIT_GATE_FAILED);
+                                        }
                                         return;
                                     }
                                     println!(
@@ -288,6 +311,9 @@ pub fn run(cli: Cli) {
                                         println!("  notify {} cccd={:?}", s.uuid, s.cccd);
                                     }
                                     println!("\n{}", crate::report::to_table(&checks));
+                                    if gate(&checks) {
+                                        std::process::exit(crate::baseline::EXIT_GATE_FAILED);
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("gatt: {e}\n  fix: {}", e.remediation());
