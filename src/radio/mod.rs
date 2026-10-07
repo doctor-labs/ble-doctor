@@ -4,6 +4,7 @@
 pub mod raw;
 
 use crate::error::BleError;
+use crate::gatt::{GattChar, GattDescriptor, GattService};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -86,6 +87,144 @@ impl Central for BtleplugCentral {
             });
         }
         Ok(out)
+    }
+}
+
+/// Failure of a GATT write: the peer's ATT error code, or a mapped BLE error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    Att(u8),
+    Ble(BleError),
+}
+
+impl From<BleError> for WriteError {
+    fn from(e: BleError) -> Self {
+        Self::Ble(e)
+    }
+}
+
+/// A connected GATT client. #8/#9/#10 build on this; fakes implement it in tests.
+/// Characteristics are addressed by UUID (first match wins).
+#[allow(async_fn_in_trait)]
+pub trait GattClient {
+    /// Enumerate services / characteristics / descriptors.
+    async fn services(&self) -> Result<Vec<GattService>, BleError>;
+    /// Write `data` to the characteristic (with response when supported).
+    async fn write(&self, uuid: &str, data: &[u8]) -> Result<(), WriteError>;
+    /// Read the characteristic value.
+    async fn read(&self, uuid: &str) -> Result<Vec<u8>, BleError>;
+}
+
+/// btleplug-backed client over one connected peripheral.
+pub struct BtleplugClient(btleplug::platform::Peripheral);
+
+impl BtleplugClient {
+    /// Scan for `timeout`, then connect to the peripheral whose backend id is `id`
+    /// and discover its services. Needs a radio (deferred live test).
+    pub async fn connect(id: &str, timeout: Duration) -> Result<Self, BleError> {
+        use btleplug::api::{Central as _, Manager as _, Peripheral as _, ScanFilter};
+        let manager = btleplug::platform::Manager::new().await.map_err(map_err)?;
+        let adapter = manager
+            .adapters()
+            .await
+            .map_err(map_err)?
+            .into_iter()
+            .next()
+            .ok_or(BleError::AdapterNotFound)?;
+        adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .map_err(map_err)?;
+        tokio::time::sleep(timeout).await;
+        let _ = adapter.stop_scan().await;
+        let p = adapter
+            .peripherals()
+            .await
+            .map_err(map_err)?
+            .into_iter()
+            .find(|p| p.id().to_string().eq_ignore_ascii_case(id))
+            .ok_or(BleError::DeviceNotFound)?;
+        p.connect().await.map_err(map_err)?;
+        p.discover_services().await.map_err(map_err)?;
+        Ok(Self(p))
+    }
+
+    fn find(&self, uuid: &str) -> Result<btleplug::api::Characteristic, BleError> {
+        use btleplug::api::Peripheral as _;
+        let want = uuid.to_lowercase();
+        self.0
+            .characteristics()
+            .into_iter()
+            .find(|c| c.uuid.to_string() == want)
+            .ok_or(BleError::CharNotFound)
+    }
+}
+
+fn prop_names(f: btleplug::api::CharPropFlags) -> Vec<String> {
+    use btleplug::api::CharPropFlags as F;
+    [
+        (F::BROADCAST, "broadcast"),
+        (F::READ, "read"),
+        (F::WRITE_WITHOUT_RESPONSE, "write-without-response"),
+        (F::WRITE, "write"),
+        (F::NOTIFY, "notify"),
+        (F::INDICATE, "indicate"),
+        (
+            F::AUTHENTICATED_SIGNED_WRITES,
+            "authenticated-signed-writes",
+        ),
+        (F::EXTENDED_PROPERTIES, "extended-properties"),
+    ]
+    .into_iter()
+    .filter(|(b, _)| f.contains(*b))
+    .map(|(_, n)| n.to_string())
+    .collect()
+}
+
+impl GattClient for BtleplugClient {
+    async fn services(&self) -> Result<Vec<GattService>, BleError> {
+        use btleplug::api::Peripheral as _;
+        Ok(self
+            .0
+            .services()
+            .into_iter()
+            .map(|s| GattService {
+                uuid: s.uuid.to_string(),
+                characteristics: s
+                    .characteristics
+                    .into_iter()
+                    .map(|c| GattChar {
+                        uuid: c.uuid.to_string(),
+                        properties: prop_names(c.properties),
+                        description: None,
+                        descriptors: Some(
+                            c.descriptors
+                                .into_iter()
+                                .map(|d| GattDescriptor {
+                                    uuid: d.uuid.to_string(),
+                                })
+                                .collect(),
+                        ),
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    async fn write(&self, uuid: &str, data: &[u8]) -> Result<(), WriteError> {
+        use btleplug::api::{Peripheral as _, WriteType};
+        let c = self.find(uuid)?;
+        // ponytail: backend ATT error codes are not exposed by btleplug; all failures map to Ble.
+        self.0
+            .write(&c, data, WriteType::WithResponse)
+            .await
+            .map_err(|e| WriteError::Ble(map_err(e)))
+    }
+
+    async fn read(&self, uuid: &str) -> Result<Vec<u8>, BleError> {
+        use btleplug::api::Peripheral as _;
+        let c = self.find(uuid)?;
+        self.0.read(&c).await.map_err(map_err)
     }
 }
 

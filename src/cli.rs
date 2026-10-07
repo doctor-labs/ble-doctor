@@ -165,7 +165,44 @@ pub fn run(cli: Cli) {
                 }
                 if let Some(t) = target {
                     match select_target_device(&devs, t) {
-                        Ok(d) => println!("selected: {}", d.id),
+                        Ok(d) => {
+                            println!("selected: {}", d.id);
+                            let id = d.id.clone();
+                            let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+                            let gi = tokio::task::block_in_place(|| {
+                                tokio::runtime::Handle::current().block_on(async {
+                                    use crate::radio::{BtleplugClient, GattClient};
+                                    let c = BtleplugClient::connect(&id, dur).await?;
+                                    let s = c.services().await?;
+                                    Ok::<_, crate::error::BleError>(
+                                        crate::gatt::extract_gatt_fields(&s, &id, name.as_deref()),
+                                    )
+                                })
+                            });
+                            match gi {
+                                Ok(g) => {
+                                    println!(
+                                        "gatt: {} services, {} writable, {} subscribable",
+                                        g.service_uuids.len(),
+                                        g.writable_chars.len(),
+                                        g.subscribe_chars.len()
+                                    );
+                                    for w in &g.writable_chars {
+                                        println!(
+                                            "  write {} requires_bonding={} ({})",
+                                            w.uuid, w.requires_bonding, w.bonding_basis
+                                        );
+                                    }
+                                    for s in &g.subscribe_chars {
+                                        println!("  notify {} cccd={:?}", s.uuid, s.cccd);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("gatt: {e}\n  fix: {}", e.remediation());
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
                         Err(e) => {
                             eprintln!("scan: {e}");
                             std::process::exit(1);
