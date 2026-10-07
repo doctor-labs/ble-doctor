@@ -3,6 +3,11 @@
 
 pub mod raw;
 
+#[cfg(target_os = "linux")]
+mod bluer_client;
+#[cfg(target_os = "linux")]
+pub use bluer_client::BluerGattClient;
+
 use crate::error::BleError;
 use crate::gatt::{GattChar, GattDescriptor, GattService};
 use std::collections::BTreeMap;
@@ -226,6 +231,28 @@ impl GattClient for BtleplugClient {
         let c = self.find(uuid)?;
         self.0.read(&c).await.map_err(map_err)
     }
+}
+
+/// Connect to `dev`. Linux uses BlueZ via bluer with discovery held open across
+/// `connect()` (works around the 6.15+ le-connection-abort-by-local regression,
+/// bluez#2503) and honours `adapter`; elsewhere btleplug is used and `adapter` is ignored.
+#[cfg(target_os = "linux")]
+pub async fn connect_client(
+    adapter: Option<&str>,
+    dev: &DiscoveredDevice,
+    timeout: Duration,
+) -> Result<BluerGattClient, BleError> {
+    let addr = dev.address.as_deref().ok_or(BleError::DeviceNotFound)?;
+    BluerGattClient::connect(adapter, addr, timeout).await
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn connect_client(
+    _adapter: Option<&str>,
+    dev: &DiscoveredDevice,
+    timeout: Duration,
+) -> Result<BtleplugClient, BleError> {
+    BtleplugClient::connect(&dev.id, timeout).await
 }
 
 fn hex_only(s: &str) -> String {

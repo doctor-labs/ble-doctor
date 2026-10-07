@@ -6,6 +6,9 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(name = "ble-doctor", version, about)]
 pub struct Cli {
+    /// Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere.
+    #[arg(long, global = true)]
+    pub adapter: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -422,11 +425,13 @@ pub fn run(cli: Cli) {
                         Ok(d) => {
                             println!("selected: {}", d.id);
                             let id = d.id.clone();
+                            let dev = d.clone();
                             let name = d.adv_local_name.clone().or_else(|| d.name.clone());
                             let gi = tokio::task::block_in_place(|| {
                                 tokio::runtime::Handle::current().block_on(async {
-                                    use crate::radio::{BtleplugClient, GattClient};
-                                    let c = BtleplugClient::connect(&id, dur).await?;
+                                    use crate::radio::{connect_client, GattClient};
+                                    let c =
+                                        connect_client(cli.adapter.as_deref(), &dev, dur).await?;
                                     let s = c.services().await?;
                                     Ok::<_, crate::error::BleError>(
                                         crate::gatt::extract_gatt_fields(&s, &id, name.as_deref()),
@@ -515,7 +520,7 @@ pub fn run(cli: Cli) {
     } = &cli.command
     {
         use crate::radio::{
-            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
         };
         let dur = std::time::Duration::from_secs(*timeout);
         let res = tokio::task::block_in_place(|| {
@@ -523,7 +528,7 @@ pub fn run(cli: Cli) {
                 let devs = BtleplugCentral.scan(dur).await?;
                 let d = select_target_device(&devs, target)?.clone();
                 let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                 let s = c.services().await?;
                 Ok::<_, crate::error::BleError>(crate::gatt::extract_gatt_fields(
                     &s,
@@ -592,7 +597,7 @@ pub fn run(cli: Cli) {
             std::process::exit(1);
         };
         use crate::radio::{
-            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
         };
         let dur = std::time::Duration::from_secs(*timeout);
         let res = tokio::task::block_in_place(|| {
@@ -600,7 +605,7 @@ pub fn run(cli: Cli) {
                 let devs = BtleplugCentral.scan(dur).await?;
                 let d = select_target_device(&devs, target)?.clone();
                 let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                 let s = c.services().await?;
                 let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
                 let results =
@@ -655,7 +660,7 @@ pub fn run(cli: Cli) {
             std::process::exit(1);
         };
         use crate::radio::{
-            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
         };
         let dur = std::time::Duration::from_secs(*timeout);
         let res = tokio::task::block_in_place(|| {
@@ -663,7 +668,7 @@ pub fn run(cli: Cli) {
                 let devs = BtleplugCentral.scan(dur).await?;
                 let d = select_target_device(&devs, target)?.clone();
                 let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                 let g =
                     crate::gatt::extract_gatt_fields(&c.services().await?, &d.id, name.as_deref());
                 let mut f = crate::fingerprint::le_gatt_fingerprint(&g);
@@ -736,14 +741,14 @@ pub fn run(cli: Cli) {
              authorization only). SIG services and firmware/DFU characteristics are skipped."
         );
         use crate::radio::{
-            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
         };
         let dur = std::time::Duration::from_secs(*timeout);
         let res = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 let devs = BtleplugCentral.scan(dur).await?;
                 let d = select_target_device(&devs, target)?.clone();
-                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                 let chars = crate::probe::read::read_chars(&c.services().await?);
                 Ok::<_, crate::error::BleError>(crate::probe::read::read_values(&c, &chars).await)
             })
@@ -789,7 +794,7 @@ pub fn run(cli: Cli) {
             std::process::exit(1);
         };
         use crate::radio::{
-            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
         };
         let dur = std::time::Duration::from_secs(*timeout);
         let bond_sharing = *bond_sharing;
@@ -798,7 +803,7 @@ pub fn run(cli: Cli) {
                 let devs = BtleplugCentral.scan(dur).await?;
                 let d = select_target_device(&devs, target)?.clone();
                 let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                 let s = c.services().await?;
                 let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
                 let buttonless = crate::probe::dfu::probe_buttonless(&c, bond_sharing).await;
@@ -843,7 +848,7 @@ pub fn run(cli: Cli) {
             "ctf: own-gear / CTF scope only (own hardware or a device you are authorized to test, \
              e.g. hackgnar/ble_ctf). This writes to the device."
         );
-        use crate::radio::{select_target_device, BtleplugCentral, BtleplugClient, Central};
+        use crate::radio::{connect_client, select_target_device, BtleplugCentral, Central};
         match action {
             CtfCmd::Brute {
                 target,
@@ -857,7 +862,7 @@ pub fn run(cli: Cli) {
                     tokio::runtime::Handle::current().block_on(async {
                         let devs = BtleplugCentral.scan(dur).await?;
                         let d = select_target_device(&devs, target)?.clone();
-                        let c = BtleplugClient::connect(&d.id, dur).await?;
+                        let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                         Ok::<_, crate::error::BleError>(
                             crate::ctf::brute_write(&c, char_uuid, read_uuid, |v| {
                                 String::from_utf8_lossy(v).contains(contains.as_str())
@@ -894,7 +899,7 @@ pub fn run(cli: Cli) {
                     tokio::runtime::Handle::current().block_on(async {
                         let devs = BtleplugCentral.scan(dur).await?;
                         let d = select_target_device(&devs, target)?.clone();
-                        let c = BtleplugClient::connect(&d.id, dur).await?;
+                        let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                         Ok::<_, crate::error::BleError>(crate::ctf::read_n(&c, char_uuid, n).await)
                     })
                 });
@@ -929,7 +934,7 @@ pub fn run(cli: Cli) {
                     tokio::runtime::Handle::current().block_on(async {
                         let devs = BtleplugCentral.scan(dur).await?;
                         let d = select_target_device(&devs, target)?.clone();
-                        let c = BtleplugClient::connect(&d.id, dur).await?;
+                        let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
                         crate::ctf::write_then_read(&c, char_uuid, &data, read_uuid).await
                     })
                 });
