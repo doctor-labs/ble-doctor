@@ -1,5 +1,6 @@
 //! Native btsnoop/pcap ingestion and capture-based checks (no tshark).
 
+use crate::checks::{CheckResult, Severity};
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -21,23 +22,6 @@ pub struct CaptureInfo {
     pub adv_frame_timestamps: Vec<f64>,
     pub duration_seconds: Option<f64>,
     pub capture_flavour: Option<String>,
-}
-
-/// Finding severity.
-// TODO: rebind to src/checks.rs Severity/CheckResult when #7 lands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum Severity {
-    Info,
-    Medium,
-}
-
-/// Minimal check result (shape of v1 `CheckResult`).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct CheckResult {
-    pub id: String,
-    pub severity: Severity,
-    pub passed: bool,
-    pub detail: String,
 }
 
 fn fmt_mac(le: &[u8]) -> String {
