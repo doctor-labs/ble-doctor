@@ -16,7 +16,13 @@ pub enum Command {
     /// Scan for BLE devices
     Scan,
     /// Analyze a capture or device
-    Analyze,
+    Analyze {
+        /// Path to a btsnoop/pcap capture
+        capture: std::path::PathBuf,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Probe writable characteristics
     ProbeWrites,
     /// Read characteristic values
@@ -58,7 +64,7 @@ impl Command {
     pub fn stub(&self) -> (&'static str, u32) {
         match self {
             Command::Scan => ("scan", 7),
-            Command::Analyze => ("analyze", 11),
+            Command::Analyze { .. } => ("analyze", 11),
             Command::ProbeWrites => ("probe-writes", 8),
             Command::ReadValues => ("read-values", 9),
             Command::Dfu => ("dfu", 10),
@@ -81,6 +87,33 @@ impl Command {
 
 /// Dispatch a parsed CLI.
 pub fn run(cli: Cli) {
+    if let Command::Analyze { capture, json } = &cli.command {
+        let res = std::fs::read(capture)
+            .map_err(|e| e.to_string())
+            .and_then(|b| crate::capture::parse_capture(&b));
+        match res {
+            Ok(info) => {
+                let r = crate::capture::check_mac_rotation(&info);
+                if *json {
+                    let v = serde_json::json!({"capture": info, "checks": [r]});
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                } else {
+                    println!(
+                        "capture: {} ({} adv frames)",
+                        info.capture_flavour.as_deref().unwrap_or("unknown"),
+                        info.adv_mac_addresses.len()
+                    );
+                    let tag = if r.passed { "PASS" } else { "FAIL" };
+                    println!("[{tag}] {:?} {}: {}", r.severity, r.id, r.detail);
+                }
+            }
+            Err(e) => {
+                eprintln!("analyze: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let (name, issue) = cli.command.stub();
     println!("{name}: not yet implemented (#{issue})");
 }
