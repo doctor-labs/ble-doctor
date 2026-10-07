@@ -66,3 +66,32 @@ dongle): actually *solving* CTF flags 15/16 (#16/#17 raw radio) and live MITM (#
 raw HCI/L2CAP or the bluster peripheral, and the Pi's kernel 6.18 aborts the link. `#9 read-values`
 reads only non-SIG services; this board puts everything under the `0000ffxx` SIG base, so read-values
 correctly skips it all.
+
+## #60 regression-workaround attempt + definitive HCI-trace diagnosis (2026-10-07)
+
+Added a Linux `bluer`-backed connect path that holds a discovery session open across
+`device.connect()` (`--adapter <hciN>`), the documented fix for bug #2503. It **builds and runs on
+the Pi** (kernel 6.18). But connecting to the ESP32 still failed — and an `btmon` HCI trace shows
+**why, conclusively, and it is NOT bug #2503**:
+
+```
+< LE Create Connection            → Status: Success
+> LE Connection Complete          → Status: Success, Handle 64   (the link forms)
+< LE Read Remote Used Features     (kernel's automatic post-connect query)
+> LE Read Remote Used Features    → Status: Connection Failed to be Established (0x3e)
+> Disconnect Complete             → Reason: 0x3e                 (~0.5s after connect)
+```
+
+The connection physically establishes, then the **ESP32 fails the kernel's post-connect
+`LE Read Remote Used Features` exchange**, and kernel 6.18 aborts with `0x3e`. BlueZ reports this as
+`le-connection-abort-by-local`. This is an **ESP32 ↔ kernel-6.18 controller interop failure**,
+distinct from the discovery-abort regression — holding discovery cannot fix it (confirmed: forced
+continuous external `btmgmt find` throughout the connect did not help).
+
+**Conclusions:**
+- The `--adapter` + held-discovery feature (#60) is correct and valuable for the *common* 6.15+
+  discovery-abort case; it simply cannot be live-verified against this ESP32, which has a different
+  bug. (Verify the workaround later against a normal bonded peripheral on a 6.15+ host.)
+- Connecting to **this ESP32 from Linux** needs a **kernel ≤ 6.12** (e.g. a spare SD image) — the
+  only remaining path for live CTF flags 15/16 and live MITM on this rig. The full audit is already
+  validated against this ESP32 via macOS (see above).
