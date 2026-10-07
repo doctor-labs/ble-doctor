@@ -119,6 +119,10 @@ impl Command {
 
 /// Dispatch a parsed CLI.
 pub fn run(cli: Cli) {
+    if let Command::Mcp = &cli.command {
+        crate::mcp::serve();
+        return;
+    }
     if let Command::Analyze { capture, json } = &cli.command {
         let res = std::fs::read(capture)
             .map_err(|e| e.to_string())
