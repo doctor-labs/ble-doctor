@@ -14,7 +14,14 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Scan for BLE devices
-    Scan,
+    Scan {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: Option<String>,
+        /// Scan duration in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+    },
     /// Analyze a capture or device
     Analyze {
         /// Path to a btsnoop/pcap capture
@@ -63,7 +70,7 @@ impl Command {
     /// Stub message: command name and tracking issue.
     pub fn stub(&self) -> (&'static str, u32) {
         match self {
-            Command::Scan => ("scan", 7),
+            Command::Scan { .. } => ("scan", 7),
             Command::Analyze { .. } => ("analyze", 11),
             Command::ProbeWrites => ("probe-writes", 8),
             Command::ReadValues => ("read-values", 9),
@@ -109,6 +116,41 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("analyze: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Scan { target, timeout } = &cli.command {
+        use crate::radio::{select_target_device, BtleplugCentral, Central};
+        let dur = std::time::Duration::from_secs(*timeout);
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(BtleplugCentral.scan(dur))
+        });
+        match res {
+            Ok(devs) => {
+                for d in &devs {
+                    println!(
+                        "{}  addr={} name={} adv={} rssi={}",
+                        d.id,
+                        d.address.as_deref().unwrap_or("-"),
+                        d.name.as_deref().unwrap_or("-"),
+                        d.adv_local_name.as_deref().unwrap_or("-"),
+                        d.rssi.map_or("-".into(), |r| r.to_string())
+                    );
+                }
+                if let Some(t) = target {
+                    match select_target_device(&devs, t) {
+                        Ok(d) => println!("selected: {}", d.id),
+                        Err(e) => {
+                            eprintln!("scan: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("scan: {e}\n  fix: {}", e.remediation());
                 std::process::exit(1);
             }
         }
