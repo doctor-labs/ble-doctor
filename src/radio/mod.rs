@@ -1,6 +1,8 @@
 //! Radio abstraction: traits the rest of the code (and fakes) work against,
 //! a btleplug-backed implementation, and pure target selection.
 
+pub mod raw;
+
 use crate::error::BleError;
 use std::collections::BTreeMap;
 use std::time::Duration;
