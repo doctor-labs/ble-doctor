@@ -115,7 +115,11 @@ pub enum Command {
     /// Baseline snapshots
     Baseline,
     /// Export a handoff bundle
-    Handoff,
+    Handoff {
+        /// A `scan --json` report file to turn into the bundle (no radio)
+        #[arg(long)]
+        report: std::path::PathBuf,
+    },
     /// Inspect rules
     Rules {
         #[command(subcommand)]
@@ -161,7 +165,7 @@ impl Command {
             Command::Recon { .. } => ("recon", 21),
             Command::Ctf => ("ctf", 22),
             Command::Baseline => ("baseline", 26),
-            Command::Handoff => ("handoff", 27),
+            Command::Handoff { .. } => ("handoff", 27),
             Command::Rules { .. } | Command::Why { .. } => ("rules", 23),
         }
     }
@@ -619,6 +623,14 @@ pub fn run(cli: Cli) {
     }
     if let Command::Why { id, report } = &cli.command {
         finish(why(id, report.as_deref()));
+        return;
+    }
+    if let Command::Handoff { report } = &cli.command {
+        finish(
+            crate::handoff::from_report(report)
+                .map(|v| serde_json::to_string_pretty(&v).unwrap() + "\n")
+                .map_err(|e| (1, format!("handoff: {e}"))),
+        );
         return;
     }
     let (name, issue) = cli.command.stub();
