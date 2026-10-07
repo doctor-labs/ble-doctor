@@ -95,3 +95,53 @@ continuous external `btmgmt find` throughout the connect did not help).
 - Connecting to **this ESP32 from Linux** needs a **kernel ≤ 6.12** (e.g. a spare SD image) — the
   only remaining path for live CTF flags 15/16 and live MITM on this rig. The full audit is already
   validated against this ESP32 via macOS (see above).
+
+## Kernel 6.12 downgrade test (2026-10-08) — rules out the regression; ESP32 still blocked
+
+To test whether the kernel 6.15+ regression was the cause, the Pi was booted into **kernel
+6.12.75** (installed `linux-image-6.12.75+rpt-rpi-2712` alongside 6.18, booted via **`tryboot`** so
+a power-cycle auto-reverts — current install untouched). `ble-doctor` rebuilt and run against the
+same ESP32.
+
+**Result: identical failure on 6.12 as on 6.18**, confirmed by `btmon`:
+```
+LE Connection Complete → Status: Success, Handle 76
+LE Read Remote Used Features → Status: Connection Failed to be Established (0x3e)
+Disconnect Complete → Reason: 0x3e
+```
+`bluetoothctl connect` (even with discovery held active) shows the same `Connected: yes →
+le-connection-abort-by-local`.
+
+**Conclusion:** this ESP32's failure is **NOT** the 6.15+ discovery-abort regression (bug #2503) —
+it reproduces on 6.12. It is a **kernel-independent BlueZ/Pi-controller ↔ this-ESP32 interop
+failure** on the post-connect `LE Read Remote Used Features` exchange. macOS (CoreBluetooth) and
+Android tolerate it; the Pi's onboard (Broadcom) and CSR controllers do not, on either kernel.
+
+**Remaining avenue for live flags 15/16 + MITM against *this* ESP32 from Linux:** a **different BLE
+controller chipset** (e.g. an nRF52840 dongle — untested; the 0x3e is a controller-level exchange,
+so a different controller *might* tolerate it where Broadcom/CSR don't). The core audit is already
+complete against this ESP32 via macOS. The Pi was reverted to 6.18 after the test.
+
+### How the CTF writeups connect — and why it doesn't work here
+
+The hackgnar ble_ctf writeups (camercu/ble-ctf, HardwareAllTheThings, etc.) connect from Linux with
+**`gatttool`**, which uses a **raw L2CAP ATT** socket and bypasses the BlueZ D-Bus connection manager
+(and its post-connect `Read Remote Used Features` query — the step that fails here with `0x3e`). That
+is the same approach our #15/#16 raw-L2CAP path takes, so it was the most promising lead.
+
+Tested on the Pi (kernel 6.18, BlueZ 5.82): `gatttool -b <addr> --primary` returns **`Function not
+implemented (38)`** (ENOSYS), and with explicit `-t public`/`-t random` it hangs. gatttool's classic
+raw-L2CAP-ATT connect is **deprecated and non-functional on this modern kernel/BlueZ**. So the
+writeups' method (which worked on the older systems they were written for) does not apply to this rig.
+
+**Final, exhaustive conclusion for this ESP32 on this Pi:**
+- BlueZ-managed connect (bluetoothctl / bleak / ble-doctor) → `0x3e` on `Read Remote Used Features`,
+  on **both 6.12 and 6.18** (kernel-independent).
+- gatttool raw-L2CAP ATT (the CTF method) → ENOSYS / hangs on the modern stack.
+- macOS CoreBluetooth → **works** (full audit done: enumerate, score 70/100, 13 empirical unbonded
+  writes, DFU, fingerprint).
+
+There is no working Linux connection path to **this** ESP32 on **this** Pi for the raw-radio flags
+15/16. Options that remain: a different BLE controller chipset (e.g. nRF52840 — untested), a host
+with an older BlueZ where gatttool's raw ATT still works, or a different BLE target. The audit itself
+is complete via macOS.
