@@ -37,3 +37,32 @@ Any one of:
 - **Bumble + vhci** virtual radio — but `hci_vhci` is **not built into this Pi's kernel**, so that path needs a kernel module first.
 
 CTF flags 15/16 (#17/#16) specifically stay blocked until one of the above, exactly as recorded for v1.
+
+## macOS run vs the same ESP32 (2026-10-07) — the connect tests the Pi couldn't
+
+The ESP32 `BLECTF_1CBE` was also in BLE range of a Mac (CoreBluetooth, which has **no** kernel-6.18
+regression), so the connection-dependent tests macOS supports were run live against it.
+
+**Passed live (macOS, real ESP32):**
+- **#6 enumerate** — 1 service, 13 writable characteristics (`0xff02`..`0xff16`), 5 notify/indicate
+  with **`cccd=None`** (the no-CCCD case from #66, confirmed on real firmware).
+- **#7 scoring + report** — **score 70/100** (one HIGH caps at 70 — the product-of-survival math),
+  `unauthenticated_writes` HIGH listing all 13 chars.
+- **#8 probe-writes** (`--allow-dangerous`) — all 13 writable chars **empirically Accepted unbonded**
+  (`requires_bonding=false`), confirming the finding empirically, not just heuristically. (This writes
+  to the board and changes ble_ctf challenge state; it is own gear and resets on reboot.)
+- **#10 DFU checks** — `dfu_entry_point` / `dfu_signing_enforced` (INCONCLUSIVE, 0 weight) /
+  `dfu_surface_absent` all ran; correctly reports no DFU surface as evidence.
+- **#18 fingerprint** — full LE+GATT profile (services/chars/properties) + clean
+  "SDP/LMP need a Linux host".
+
+**Capability gating validated live (clean `Unsupported`, no crash) on macOS:**
+- `#16` exact-MTU → "raw L2CAP/HCI is not supported on macos".
+- `#17` address-override → same.
+- `#20` MITM → "needs Linux with 2 adapters + peripheral mode (bluster)".
+
+**Still genuinely blocked** (need a good-kernel Linux host near the ESP32, or a different-chipset
+dongle): actually *solving* CTF flags 15/16 (#16/#17 raw radio) and live MITM (#20) — macOS cannot do
+raw HCI/L2CAP or the bluster peripheral, and the Pi's kernel 6.18 aborts the link. `#9 read-values`
+reads only non-SIG services; this board puts everything under the `0000ffxx` SIG base, so read-values
+correctly skips it all.
