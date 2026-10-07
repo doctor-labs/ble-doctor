@@ -51,6 +51,18 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device
+    Sniff {
+        /// Serial/USB sniffer port (e.g. /dev/ttyACM0)
+        #[arg(long, conflicts_with = "from_file")]
+        device: Option<String>,
+        /// Saved Sniffle text dump to parse instead of live capture
+        #[arg(long)]
+        from_file: Option<std::path::PathBuf>,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)
     Fingerprint {
         /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
@@ -235,6 +247,7 @@ impl Command {
             Command::Scan { .. } => ("scan", 7),
             Command::Analyze { .. } => ("analyze", 11),
             Command::ProbeWrites { .. } => ("probe-writes", 8),
+            Command::Sniff { .. } => ("sniff", 19),
             Command::Fingerprint { .. } => ("fingerprint", 18),
             Command::ReadValues { .. } => ("read-values", 9),
             Command::Dfu { .. } => ("dfu", 10),
@@ -277,6 +290,39 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("analyze: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Sniff {
+        device,
+        from_file,
+        json,
+    } = &cli.command
+    {
+        let res = match (from_file, device) {
+            (Some(f), _) => std::fs::read_to_string(f)
+                .map(|t| crate::sniffer::parse_sniffle(&t))
+                .map_err(|e| format!("{}: {e}", f.display())),
+            (None, Some(d)) => crate::sniffer::drive_sniffer(d)
+                .map_err(|e| format!("{e}\n  fix: {}", e.remediation())),
+            (None, None) => Err("pass --device <port> or --from-file <dump>".into()),
+        };
+        match res {
+            Ok(info) => {
+                let r = crate::capture::check_mac_rotation(&info);
+                if *json {
+                    let v = serde_json::json!({"capture": info, "checks": [r]});
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                } else {
+                    println!("sniffer: {} adv frames", info.adv_mac_addresses.len());
+                    let tag = if r.passed { "PASS" } else { "FAIL" };
+                    println!("[{tag}] {:?} {}: {}", r.severity, r.id, r.detail);
+                }
+            }
+            Err(e) => {
+                eprintln!("sniff: {e}");
                 std::process::exit(1);
             }
         }
