@@ -26,6 +26,24 @@ pub const RULES: &[Rule] = &[
         severities: &["medium", "info"],
         category: "privacy",
     },
+    Rule {
+        id: "dfu_entry_point",
+        title: "DFU control point reachable without bonding",
+        severities: &["high", "info"],
+        category: "dfu",
+    },
+    Rule {
+        id: "dfu_signing_enforced",
+        title: "Firmware signature verification",
+        severities: &["high", "medium", "info"],
+        category: "dfu",
+    },
+    Rule {
+        id: "dfu_surface_absent",
+        title: "No DFU/OTA surface present",
+        severities: &["info"],
+        category: "dfu",
+    },
 ];
 
 const DOCS: &[(&str, &str)] = &[
@@ -34,6 +52,18 @@ const DOCS: &[(&str, &str)] = &[
         include_str!("rule_docs/unauthenticated_writes.md"),
     ),
     ("mac_rotation", include_str!("rule_docs/mac_rotation.md")),
+    (
+        "dfu_entry_point",
+        include_str!("rule_docs/dfu_entry_point.md"),
+    ),
+    (
+        "dfu_signing_enforced",
+        include_str!("rule_docs/dfu_signing_enforced.md"),
+    ),
+    (
+        "dfu_surface_absent",
+        include_str!("rule_docs/dfu_surface_absent.md"),
+    ),
 ];
 
 pub fn rules() -> &'static [Rule] {

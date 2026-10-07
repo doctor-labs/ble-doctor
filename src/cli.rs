@@ -73,8 +73,24 @@ pub enum Command {
         #[arg(long, default_value_t = 5)]
         timeout: u64,
     },
-    /// Probe DFU surface
-    Dfu,
+    /// Probe DFU surface (EMPIRICAL buttonless probe: writes to the device without bonding)
+    Dfu {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: Option<String>,
+        /// Required: this writes to the device.
+        #[arg(long)]
+        allow_dangerous: bool,
+        /// Also probe the bond-sharing buttonless characteristic (8ec90004-...)
+        #[arg(long)]
+        bond_sharing: bool,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Diagnose the local BLE environment
     Doctor,
     /// Run the MCP server
@@ -139,7 +155,7 @@ impl Command {
             Command::Analyze { .. } => ("analyze", 11),
             Command::ProbeWrites { .. } => ("probe-writes", 8),
             Command::ReadValues { .. } => ("read-values", 9),
-            Command::Dfu => ("dfu", 10),
+            Command::Dfu { .. } => ("dfu", 10),
             Command::Doctor => ("doctor", 4),
             Command::Mcp => ("mcp", 12),
             Command::Recon { .. } => ("recon", 21),
@@ -278,7 +294,12 @@ pub fn run(cli: Cli) {
                             });
                             match gi {
                                 Ok(g) => {
-                                    let checks = [crate::checks::check_unauthenticated_writes(&g)];
+                                    let checks = [
+                                        crate::checks::check_unauthenticated_writes(&g),
+                                        crate::checks::check_dfu_entry_point(&g),
+                                        crate::checks::check_dfu_signing_enforced(&g),
+                                        crate::checks::check_dfu_surface_absent(&g),
+                                    ];
                                     let score = crate::report::compute_score(&checks);
                                     if let Some(path) = sarif {
                                         let v = crate::sarif::to_sarif(score, &checks, None);
@@ -509,6 +530,76 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("read-values: {e}\n  fix: {}", e.remediation());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Dfu {
+        target,
+        allow_dangerous,
+        bond_sharing,
+        timeout,
+        json,
+    } = &cli.command
+    {
+        if !allow_dangerous {
+            eprintln!(
+                "dfu: refused. This EMPIRICALLY writes to the buttonless-DFU characteristic \
+                 without bonding (scope: own hardware or written authorization only). Pass \
+                 --allow-dangerous to proceed."
+            );
+            std::process::exit(1);
+        }
+        let Some(target) = target else {
+            eprintln!("dfu: --target is required");
+            std::process::exit(1);
+        };
+        use crate::radio::{
+            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+        };
+        let dur = std::time::Duration::from_secs(*timeout);
+        let bond_sharing = *bond_sharing;
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let devs = BtleplugCentral.scan(dur).await?;
+                let d = select_target_device(&devs, target)?.clone();
+                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let s = c.services().await?;
+                let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
+                let buttonless = crate::probe::dfu::probe_buttonless(&c, bond_sharing).await;
+                Ok::<_, crate::error::BleError>((gi, buttonless))
+            })
+        });
+        match res {
+            Ok((gi, buttonless)) => {
+                let entry_point = crate::checks::check_dfu_entry_point(&gi);
+                let surface_absent = crate::checks::check_dfu_surface_absent(&gi);
+                if *json {
+                    let v = serde_json::json!({
+                        "buttonless": {
+                            "uuid": buttonless.uuid,
+                            "outcome": format!("{:?}", buttonless.outcome),
+                            "triggerable_unbonded": buttonless.triggerable_unbonded,
+                        },
+                        "dfu_entry_point": entry_point,
+                        "dfu_surface_absent": surface_absent,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                } else {
+                    println!(
+                        "buttonless {} -> {:?} triggerable_unbonded={}",
+                        buttonless.uuid, buttonless.outcome, buttonless.triggerable_unbonded
+                    );
+                    for r in [&entry_point, &surface_absent] {
+                        let tag = if r.passed { "PASS" } else { "FAIL" };
+                        println!("[{tag}] {:?} {}: {}", r.severity, r.id, r.detail);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("dfu: {e}\n  fix: {}", e.remediation());
                 std::process::exit(1);
             }
         }
