@@ -156,6 +156,11 @@ pub fn run(cli: Cli) {
         }
         return;
     }
+    if let Command::Doctor = &cli.command {
+        use crate::{capability::Platform, doctor};
+        let results = doctor::run_doctor(&doctor::Probes::detect(), Platform::current());
+        std::process::exit(doctor::print_report(&results));
+    }
     let (name, issue) = cli.command.stub();
     println!("{name}: not yet implemented (#{issue})");
 }
