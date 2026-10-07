@@ -21,6 +21,9 @@ pub enum Command {
         /// Scan duration in seconds
         #[arg(long, default_value_t = 5)]
         timeout: u64,
+        /// Request exactly this ATT MTU from --target (a BLE address; Linux only)
+        #[arg(long, requires = "target")]
+        mtu: Option<u16>,
     },
     /// Analyze a capture or device
     Analyze {
@@ -121,7 +124,28 @@ pub fn run(cli: Cli) {
         }
         return;
     }
-    if let Command::Scan { target, timeout } = &cli.command {
+    if let Command::Scan {
+        target: Some(t),
+        mtu: Some(m),
+        ..
+    } = &cli.command
+    {
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(crate::radio::raw::request_exact_mtu(t, *m))
+        });
+        match res {
+            Ok(n) => println!("negotiated MTU: {n}"),
+            Err(e) => {
+                eprintln!("mtu: {e}\n  fix: {}", e.remediation());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Scan {
+        target, timeout, ..
+    } = &cli.command
+    {
         use crate::radio::{select_target_device, BtleplugCentral, Central};
         let dur = std::time::Duration::from_secs(*timeout);
         let res = tokio::task::block_in_place(|| {

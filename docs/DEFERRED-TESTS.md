@@ -16,3 +16,4 @@ Format: `[ ] #<issue> — <what> — <steps> — <hardware> — <expected>`
 - [ ] #5 — live scan against a real/virtual target — `ble-doctor scan` on a host with a BLE adapter (or Bumble+vhci) — needs adapter — expected: discovers the target and selects it by advertised name
 - [ ] #4 — live doctor run on each OS — `ble-doctor doctor` on macOS / Linux / Windows with and without an adapter — needs those hosts/adapters — expected: clean ordered report, no raw OS error
 - [ ] #15 — live L2CAP ATT channel open on Linux — run on a Linux host with CAP_NET_RAW against a BLE peer — needs Linux + adapter — expected: channel opens, MTU response parsed
+- [ ] #16 — exact MTU=444 live vs ESP32 ble_ctf — on a Linux host (kernel <=6.12) with a USB dongle, request MTU 444 against the ESP32 and confirm negotiated==444 — needs Linux + dongle + ESP32 — expected: flag 16 solved
