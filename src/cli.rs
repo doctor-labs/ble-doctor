@@ -163,6 +163,17 @@ pub enum Command {
         #[arg(long)]
         report: Option<std::path::PathBuf>,
     },
+    /// GATT MITM: clone the target as a peripheral and relay+log traffic
+    /// to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)
+    Mitm {
+        /// The real target device to relay to (address / identifier / name)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: String,
+        /// Required: this actively intercepts GATT traffic between a victim
+        /// and the real device (scope: own hardware or written authorization only).
+        #[arg(long)]
+        allow_dangerous: bool,
+    },
 }
 
 /// `ctf` subcommands: brute-write / read-N / write-then-read against a
@@ -258,6 +269,7 @@ impl Command {
             Command::Baseline => ("baseline", 26),
             Command::Handoff { .. } => ("handoff", 27),
             Command::Rules { .. } | Command::Why { .. } => ("rules", 23),
+            Command::Mitm { .. } => ("mitm", 20),
         }
     }
 }
@@ -931,6 +943,43 @@ pub fn run(cli: Cli) {
             }
         }
         return;
+    }
+    if let Command::Mitm {
+        target,
+        allow_dangerous,
+    } = &cli.command
+    {
+        if !allow_dangerous {
+            eprintln!(
+                "mitm: refused. This ACTIVELY intercepts GATT traffic between a victim and the \
+                 real device by cloning it as a peripheral (scope: own hardware or written \
+                 authorization only). Pass --allow-dangerous to proceed."
+            );
+            std::process::exit(1);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let res = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(crate::mitm::live::serve(target, *allow_dangerous))
+            });
+            if let Err(e) = res {
+                eprintln!("mitm: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = target;
+            use crate::capability::{require, Feature};
+            let err = require(Feature::Mitm).expect_err("Mitm is Unsupported off Linux");
+            eprintln!(
+                "mitm: {err}\n  fix: needs Linux with 2 adapters + peripheral mode (bluster); \
+                 not available on this platform."
+            );
+            std::process::exit(1);
+        }
     }
     if let Command::Doctor = &cli.command {
         use crate::{capability::Platform, doctor};
