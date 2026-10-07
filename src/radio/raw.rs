@@ -46,6 +46,48 @@ pub fn encode_hci_le_set_random_address(addr: [u8; 6]) -> Vec<u8> {
     v
 }
 
+/// The CTF needs exactly this MTU (flag 16).
+pub const CTF_MTU: u16 = 444;
+
+/// Succeed only if the peer negotiated exactly what we asked for.
+pub fn check_negotiated(requested: u16, got: u16) -> Result<u16, BleError> {
+    if got == requested {
+        Ok(got)
+    } else {
+        Err(BleError::OsError {
+            context: format!("MTU negotiated {got}, requested {requested}"),
+        })
+    }
+}
+
+/// Request exactly `mtu` from `peer` (LE public address) over a raw ATT channel.
+/// Unsupported off Linux; errors if the negotiated MTU differs from `mtu`.
+pub async fn request_exact_mtu(peer: &str, mtu: u16) -> Result<u16, BleError> {
+    ensure_raw_supported()?;
+    crate::capability::require(Feature::RequestExactMtu).map_err(|_| BleError::Unsupported {
+        feature: "exact MTU request".into(),
+        platform: std::env::consts::OS.into(),
+    })?;
+    request_exact_mtu_impl(peer, mtu).await
+}
+
+#[cfg(target_os = "linux")]
+async fn request_exact_mtu_impl(peer: &str, mtu: u16) -> Result<u16, BleError> {
+    let addr: bluer::Address = peer.parse().map_err(|_| BleError::OsError {
+        context: format!("invalid address {peer}"),
+    })?;
+    let mut ch = open_att_channel(addr).await?;
+    check_negotiated(mtu, exchange_mtu(&mut ch, mtu).await?)
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn request_exact_mtu_impl(_peer: &str, _mtu: u16) -> Result<u16, BleError> {
+    Err(BleError::Unsupported {
+        feature: "exact MTU request".into(),
+        platform: std::env::consts::OS.into(),
+    })
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
@@ -175,6 +217,24 @@ mod tests {
             encode_hci_le_set_random_address([0xC1, 0x22, 0x33, 0x44, 0x55, 0x66]),
             [0x05, 0x20, 0x06, 0x66, 0x55, 0x44, 0x33, 0x22, 0xC1]
         );
+    }
+
+    #[test]
+    fn negotiated_must_match() {
+        assert_eq!(check_negotiated(444, 444).unwrap(), 444);
+        assert!(check_negotiated(444, 185).is_err());
+    }
+
+    #[test]
+    fn exact_mtu_request_unsupported_off_linux() {
+        let r = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(request_exact_mtu("AA:BB:CC:DD:EE:FF", CTF_MTU));
+        if !cfg!(target_os = "linux") {
+            assert!(matches!(r, Err(BleError::Unsupported { .. })));
+        }
+        assert_eq!(encode_att_exchange_mtu_request(CTF_MTU), [0x02, 0xBC, 0x01]);
     }
 
     #[test]
