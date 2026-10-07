@@ -12,3 +12,4 @@ Format: `[ ] #<issue> — <what> — <steps> — <hardware> — <expected>`
 - [ ] #25 — Injection fuzzing on nRF52 firmware — run fuzz campaign against test firmware — nRF52 dev board — crashes/anomalies are detected and reported
 - [ ] Bumble+vhci integration on the Pi self-hosted runner (validate in #13)
 - [ ] macOS CoreBluetooth + Windows WinRT manual smoke (cannot virtualize)
+- [ ] #11 — SMP pairing extraction from a real capture — provide a btsnoop with an SMP pairing exchange — needs a capture — expected: classify_pairing_method returns the right method
