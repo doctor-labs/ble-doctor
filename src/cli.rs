@@ -48,6 +48,18 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)
+    Fingerprint {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: Option<String>,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Probe writable characteristics (EMPIRICAL: connects without bonding and writes)
     ProbeWrites {
         /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
@@ -158,6 +170,7 @@ impl Command {
             Command::Scan { .. } => ("scan", 7),
             Command::Analyze { .. } => ("analyze", 11),
             Command::ProbeWrites { .. } => ("probe-writes", 8),
+            Command::Fingerprint { .. } => ("fingerprint", 18),
             Command::ReadValues { .. } => ("read-values", 9),
             Command::Dfu { .. } => ("dfu", 10),
             Command::Doctor => ("doctor", 4),
@@ -492,6 +505,88 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("probe-writes: {e}\n  fix: {}", e.remediation());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Fingerprint {
+        target,
+        timeout,
+        json,
+    } = &cli.command
+    {
+        let Some(target) = target else {
+            eprintln!("fingerprint: --target is required");
+            std::process::exit(1);
+        };
+        use crate::radio::{
+            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+        };
+        let dur = std::time::Duration::from_secs(*timeout);
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let devs = BtleplugCentral.scan(dur).await?;
+                let d = select_target_device(&devs, target)?.clone();
+                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let g =
+                    crate::gatt::extract_gatt_fields(&c.services().await?, &d.id, name.as_deref());
+                let mut f = crate::fingerprint::le_gatt_fingerprint(&g);
+                match crate::fingerprint::collect_br_edr(d.address.as_deref().unwrap_or(target))
+                    .await
+                {
+                    Ok((sdp, lmp)) => {
+                        f.sdp = sdp;
+                        f.lmp = lmp;
+                    }
+                    Err(crate::error::BleError::Unsupported { .. }) => {
+                        f.notes.push(crate::fingerprint::NOTE_NEEDS_LINUX.into())
+                    }
+                    Err(e) => f.notes.push(format!("SDP/LMP failed: {e}")),
+                }
+                Ok::<_, crate::error::BleError>(f)
+            })
+        });
+        match res {
+            Ok(f) if *json => println!("{}", serde_json::to_string_pretty(&f).expect("serialize")),
+            Ok(f) => {
+                println!("{} name={}", f.address, f.name.as_deref().unwrap_or("-"));
+                println!(
+                    "services={} chars={} writable={} notify={} pairing={}",
+                    f.service_uuids.len(),
+                    f.char_count,
+                    f.writable_count,
+                    f.notify_count,
+                    f.pairing_method
+                );
+                for u in &f.service_uuids {
+                    println!("  service {u}");
+                }
+                for n in &f.notable_chars {
+                    println!("  {n}");
+                }
+                if let Some(s) = &f.sdp {
+                    for r in &s.records {
+                        println!(
+                            "  sdp {:?} {}",
+                            r.service_classes,
+                            r.name.as_deref().unwrap_or("")
+                        );
+                    }
+                }
+                if let Some(l) = &f.lmp {
+                    println!(
+                        "  lmp v{} mfr={} features={:?}",
+                        l.lmp_version, l.manufacturer, l.features
+                    );
+                }
+                for n in &f.notes {
+                    println!("  note: {n}");
+                }
+            }
+            Err(e) => {
+                eprintln!("fingerprint: {e}\n  fix: {}", e.remediation());
                 std::process::exit(1);
             }
         }
