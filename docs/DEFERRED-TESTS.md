@@ -14,3 +14,4 @@ Format: `[ ] #<issue> — <what> — <steps> — <hardware> — <expected>`
 - [ ] macOS CoreBluetooth + Windows WinRT manual smoke (cannot virtualize)
 - [ ] #11 — SMP pairing extraction from a real capture — provide a btsnoop with an SMP pairing exchange — needs a capture — expected: classify_pairing_method returns the right method
 - [ ] #5 — live scan against a real/virtual target — `ble-doctor scan` on a host with a BLE adapter (or Bumble+vhci) — needs adapter — expected: discovers the target and selects it by advertised name
+- [ ] #4 — live doctor run on each OS — `ble-doctor doctor` on macOS / Linux / Windows with and without an adapter — needs those hosts/adapters — expected: clean ordered report, no raw OS error
