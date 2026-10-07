@@ -42,8 +42,22 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Probe writable characteristics
-    ProbeWrites,
+    /// Probe writable characteristics (EMPIRICAL: connects without bonding and writes)
+    ProbeWrites {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: Option<String>,
+        /// Required: this writes to the device. Firmware/DFU characteristics are still
+        /// refused regardless of this flag.
+        #[arg(long)]
+        allow_dangerous: bool,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Read characteristic values
     ReadValues,
     /// Probe DFU surface
@@ -110,7 +124,7 @@ impl Command {
         match self {
             Command::Scan { .. } => ("scan", 7),
             Command::Analyze { .. } => ("analyze", 11),
-            Command::ProbeWrites => ("probe-writes", 8),
+            Command::ProbeWrites { .. } => ("probe-writes", 8),
             Command::ReadValues => ("read-values", 9),
             Command::Dfu => ("dfu", 10),
             Command::Doctor => ("doctor", 4),
@@ -348,6 +362,79 @@ pub fn run(cli: Cli) {
                     "\nbluesploit cross-check (EXTERNAL, HEURISTIC scrape, INFO only, not scored):"
                 );
                 println!("{}", serde_json::to_string_pretty(&b).unwrap());
+            }
+        }
+        return;
+    }
+    if let Command::ProbeWrites {
+        target,
+        allow_dangerous,
+        timeout,
+        json,
+    } = &cli.command
+    {
+        if !allow_dangerous {
+            eprintln!(
+                "probe-writes: refused. This EMPIRICALLY writes to the device without \
+                 bonding (scope: own hardware or written authorization only). Pass \
+                 --allow-dangerous to proceed; firmware/DFU characteristics are still \
+                 refused regardless."
+            );
+            std::process::exit(1);
+        }
+        let Some(target) = target else {
+            eprintln!("probe-writes: --target is required");
+            std::process::exit(1);
+        };
+        use crate::radio::{
+            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+        };
+        let dur = std::time::Duration::from_secs(*timeout);
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let devs = BtleplugCentral.scan(dur).await?;
+                let d = select_target_device(&devs, target)?.clone();
+                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let s = c.services().await?;
+                let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
+                let results =
+                    crate::probe::write::probe_write_access(&c, &gi.writable_chars, true).await;
+                Ok::<_, crate::error::BleError>((gi, results))
+            })
+        });
+        match res {
+            Ok((mut gi, results)) => {
+                gi.writable_chars = crate::probe::write::results_to_writable_chars(&results);
+                let finding = crate::checks::check_unauthenticated_writes(&gi);
+                if *json {
+                    let v = serde_json::json!({
+                        "results": results.iter().map(|r| serde_json::json!({
+                            "uuid": r.uuid,
+                            "service_uuid": r.service_uuid,
+                            "outcome": format!("{:?}", r.outcome),
+                            "requires_bonding": r.requires_bonding,
+                        })).collect::<Vec<_>>(),
+                        "finding": finding,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                } else {
+                    for r in &results {
+                        println!(
+                            "  {} ({}) -> {:?} requires_bonding={:?}",
+                            r.uuid, r.service_uuid, r.outcome, r.requires_bonding
+                        );
+                    }
+                    let tag = if finding.passed { "PASS" } else { "FAIL" };
+                    println!(
+                        "[{tag}] {:?} {}: {}",
+                        finding.severity, finding.id, finding.detail
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("probe-writes: {e}\n  fix: {}", e.remediation());
+                std::process::exit(1);
             }
         }
         return;
