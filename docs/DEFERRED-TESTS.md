@@ -13,3 +13,4 @@ Format: `[ ] #<issue> — <what> — <steps> — <hardware> — <expected>`
 - [ ] Bumble+vhci integration on the Pi self-hosted runner (validate in #13)
 - [ ] macOS CoreBluetooth + Windows WinRT manual smoke (cannot virtualize)
 - [ ] #11 — SMP pairing extraction from a real capture — provide a btsnoop with an SMP pairing exchange — needs a capture — expected: classify_pairing_method returns the right method
+- [ ] #4 — live doctor run on each OS — `ble-doctor doctor` on macOS / Linux / Windows with and without an adapter — needs those hosts/adapters — expected: clean ordered report, no raw OS error
