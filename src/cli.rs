@@ -27,6 +27,12 @@ pub enum Command {
         /// Connect to --target presenting this BLE address (LE Set Random Address; Linux only)
         #[arg(long, requires = "target", conflicts_with = "mtu")]
         as_address: Option<String>,
+        /// Emit the scored report as JSON (needs --target)
+        #[arg(long, requires = "target")]
+        json: bool,
+        /// Write a SARIF 2.1.0 report to this file (needs --target)
+        #[arg(long, requires = "target")]
+        sarif: Option<std::path::PathBuf>,
     },
     /// Analyze a capture or device
     Analyze {
@@ -165,7 +171,11 @@ pub fn run(cli: Cli) {
         return;
     }
     if let Command::Scan {
-        target, timeout, ..
+        target,
+        timeout,
+        json,
+        sarif,
+        ..
     } = &cli.command
     {
         use crate::radio::{select_target_device, BtleplugCentral, Central};
@@ -203,6 +213,20 @@ pub fn run(cli: Cli) {
                             });
                             match gi {
                                 Ok(g) => {
+                                    let checks = [crate::checks::check_unauthenticated_writes(&g)];
+                                    let score = crate::report::compute_score(&checks);
+                                    if let Some(path) = sarif {
+                                        let v = crate::sarif::to_sarif(score, &checks, None);
+                                        let body = serde_json::to_string_pretty(&v).unwrap();
+                                        if let Err(e) = std::fs::write(path, body) {
+                                            eprintln!("sarif: {}: {e}", path.display());
+                                            std::process::exit(1);
+                                        }
+                                    }
+                                    if *json {
+                                        println!("{}", crate::report::to_json(&checks));
+                                        return;
+                                    }
                                     println!(
                                         "gatt: {} services, {} writable, {} subscribable",
                                         g.service_uuids.len(),
@@ -218,6 +242,7 @@ pub fn run(cli: Cli) {
                                     for s in &g.subscribe_chars {
                                         println!("  notify {} cccd={:?}", s.uuid, s.cccd);
                                     }
+                                    println!("\n{}", crate::report::to_table(&checks));
                                 }
                                 Err(e) => {
                                     eprintln!("gatt: {e}\n  fix: {}", e.remediation());
