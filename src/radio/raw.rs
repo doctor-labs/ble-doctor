@@ -71,6 +71,56 @@ pub async fn request_exact_mtu(peer: &str, mtu: u16) -> Result<u16, BleError> {
     request_exact_mtu_impl(peer, mtu).await
 }
 
+/// Parse `AA:BB:CC:DD:EE:FF` (6 hex octets, any case) into display-order bytes.
+pub fn parse_bd_addr(s: &str) -> Result<[u8; 6], BleError> {
+    let bad = || BleError::OsError {
+        context: format!("invalid BLE address {s:?} (want AA:BB:CC:DD:EE:FF)"),
+    };
+    let mut out = [0u8; 6];
+    let mut parts = s.split(':');
+    for b in out.iter_mut() {
+        let p = parts.next().ok_or_else(bad)?;
+        if p.len() != 2 {
+            return Err(bad());
+        }
+        *b = u8::from_str_radix(p, 16).map_err(|_| bad())?;
+    }
+    if parts.next().is_some() {
+        return Err(bad());
+    }
+    Ok(out)
+}
+
+/// Set the controller's random address to `addr`, then connect to `peer`
+/// so the peer sees `addr`. Unsupported off Linux.
+pub async fn set_random_address_and_connect(addr: &str, peer: &str) -> Result<(), BleError> {
+    ensure_raw_supported()?;
+    crate::capability::require(Feature::SetRandomAddress).map_err(|_| BleError::Unsupported {
+        feature: "set random address".into(),
+        platform: std::env::consts::OS.into(),
+    })?;
+    set_random_address_and_connect_impl(parse_bd_addr(addr)?, peer).await
+}
+
+#[cfg(target_os = "linux")]
+async fn set_random_address_and_connect_impl(addr: [u8; 6], peer: &str) -> Result<(), BleError> {
+    let peer: bluer::Address = peer.parse().map_err(|_| BleError::OsError {
+        context: format!("invalid address {peer}"),
+    })?;
+    // ponytail: hci0 only; the kernel picks own_address_type, so the random
+    // address is used only if the controller/kernel selects it (live-verify, #17 deferred).
+    send_hci_command(0, &encode_hci_le_set_random_address(addr))?;
+    open_att_channel(peer).await.map(drop)
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn set_random_address_and_connect_impl(_addr: [u8; 6], _peer: &str) -> Result<(), BleError> {
+    Err(BleError::Unsupported {
+        feature: "set random address".into(),
+        platform: std::env::consts::OS.into(),
+    })
+}
+
 #[cfg(target_os = "linux")]
 async fn request_exact_mtu_impl(peer: &str, mtu: u16) -> Result<u16, BleError> {
     let addr: bluer::Address = peer.parse().map_err(|_| BleError::OsError {
@@ -217,6 +267,48 @@ mod tests {
             encode_hci_le_set_random_address([0xC1, 0x22, 0x33, 0x44, 0x55, 0x66]),
             [0x05, 0x20, 0x06, 0x66, 0x55, 0x44, 0x33, 0x22, 0xC1]
         );
+    }
+
+    #[test]
+    fn parse_bd_addr_ok_and_errors() {
+        assert_eq!(
+            parse_bd_addr("11:22:33:44:55:66").unwrap(),
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+        );
+        assert_eq!(parse_bd_addr("aA:bb:CC:dd:EE:ff").unwrap()[0], 0xAA);
+        for bad in [
+            "11:22:33:44:55",
+            "11:22:33:44:55:66:77",
+            "11:22:33:44:55:GG",
+            "112233445566",
+            "",
+        ] {
+            assert!(parse_bd_addr(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn set_random_address_hci_bytes_for_ctf_addr() {
+        let a = parse_bd_addr("11:22:33:44:55:66").unwrap();
+        assert_eq!(
+            encode_hci_le_set_random_address(a),
+            [0x05, 0x20, 0x06, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
+        );
+    }
+
+    #[test]
+    fn set_random_address_unsupported_off_linux() {
+        if cfg!(target_os = "linux") {
+            return;
+        }
+        let r = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(set_random_address_and_connect(
+                "11:22:33:44:55:66",
+                "AA:BB:CC:DD:EE:FF",
+            ));
+        assert!(matches!(r, Err(BleError::Unsupported { .. })));
     }
 
     #[test]

@@ -24,6 +24,9 @@ pub enum Command {
         /// Request exactly this ATT MTU from --target (a BLE address; Linux only)
         #[arg(long, requires = "target")]
         mtu: Option<u16>,
+        /// Connect to --target presenting this BLE address (LE Set Random Address; Linux only)
+        #[arg(long, requires = "target", conflicts_with = "mtu")]
+        as_address: Option<String>,
     },
     /// Analyze a capture or device
     Analyze {
@@ -119,6 +122,25 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("analyze: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Scan {
+        target: Some(t),
+        as_address: Some(a),
+        ..
+    } = &cli.command
+    {
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(crate::radio::raw::set_random_address_and_connect(a, t))
+        });
+        match res {
+            Ok(()) => println!("connected to {t} as {a}"),
+            Err(e) => {
+                eprintln!("as-address: {e}\n  fix: {}", e.remediation());
                 std::process::exit(1);
             }
         }
