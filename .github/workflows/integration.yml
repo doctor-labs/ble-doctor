@@ -1,0 +1,27 @@
+name: Integration (vhci)
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  integration-vhci:
+    # Disabled until the Pi runner is registered. Enable: set repo variable VHCI_RUNNER=true (see docs/CI.md).
+    if: ${{ vars.VHCI_RUNNER == 'true' }}
+    runs-on: [self-hosted, linux, bluetooth]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install bumble + load hci_vhci
+        run: |
+          python3 -m pip install --user bumble
+          sudo modprobe hci_vhci
+          test -c /dev/vhci
+      - name: Radio integration tests (#[ignore]d)
+        run: cargo test -- --ignored 2>&1 | tee integration.log
+        shell: bash
+      - name: Guard - integration tests must actually run
+        run: |
+          if ! grep -qE "test result: ok\. [1-9][0-9]* passed" integration.log; then
+            echo "::error::no integration test passed (skipped or none ran) - vhci/bumble not usable here."
+            exit 1
+          fi
