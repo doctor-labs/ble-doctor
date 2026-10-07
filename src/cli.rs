@@ -78,17 +78,30 @@ pub enum Command {
         #[command(subcommand)]
         action: RulesCmd,
     },
-    /// Explain a finding
-    Why,
+    /// Explain a finding (rule doc, plus the finding from a report JSON)
+    Why {
+        /// Rule / check id
+        id: String,
+        /// A `--json` report file to pull the matching finding from
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
+    },
 }
 
 /// `rules` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum RulesCmd {
     /// List rules
-    List,
+    List {
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Explain a rule
-    Explain,
+    Explain {
+        /// Rule id
+        id: String,
+    },
 }
 
 impl Command {
@@ -106,13 +119,7 @@ impl Command {
             Command::Ctf => ("ctf", 22),
             Command::Baseline => ("baseline", 26),
             Command::Handoff => ("handoff", 27),
-            Command::Rules {
-                action: RulesCmd::List,
-            } => ("rules list", 23),
-            Command::Rules {
-                action: RulesCmd::Explain,
-            } => ("rules explain", 23),
-            Command::Why => ("why", 23),
+            Command::Rules { .. } | Command::Why { .. } => ("rules", 23),
         }
     }
 }
@@ -350,8 +357,90 @@ pub fn run(cli: Cli) {
         let results = doctor::run_doctor(&doctor::Probes::detect(), Platform::current());
         std::process::exit(doctor::print_report(&results));
     }
+    if let Command::Rules { action } = &cli.command {
+        match action {
+            RulesCmd::List { json } => println!("{}", rules_list(*json)),
+            RulesCmd::Explain { id } => finish(explain(id)),
+        }
+        return;
+    }
+    if let Command::Why { id, report } = &cli.command {
+        finish(why(id, report.as_deref()));
+        return;
+    }
     let (name, issue) = cli.command.stub();
     println!("{name}: not yet implemented (#{issue})");
+}
+
+fn finish(r: Result<String, (i32, String)>) {
+    match r {
+        Ok(t) => print!("{t}"),
+        Err((code, msg)) => {
+            eprintln!("{msg}");
+            std::process::exit(code);
+        }
+    }
+}
+
+fn rules_list(json: bool) -> String {
+    use crate::rules::rules;
+    if json {
+        return serde_json::to_string_pretty(rules()).expect("rules serialize");
+    }
+    rules()
+        .iter()
+        .map(|r| {
+            format!(
+                "{:<24} {:<8} {:<14} {}",
+                r.id,
+                r.category,
+                r.severities.join("/"),
+                r.title
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The rule doc, or exit 2 with a "did you mean" hint.
+fn explain(id: &str) -> Result<String, (i32, String)> {
+    crate::rules::rule_text(id)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            let mut m = format!("unknown rule '{id}'");
+            let near = crate::rules::near_misses(id);
+            if !near.is_empty() {
+                m.push_str(&format!("\ndid you mean: {}?", near.join(", ")));
+            }
+            m.push_str("\n(run `ble-doctor rules list`)");
+            (2, m)
+        })
+}
+
+/// Rule doc, preceded by the matching finding when a report is given (exit 1 on a bad report).
+fn why(id: &str, report: Option<&std::path::Path>) -> Result<String, (i32, String)> {
+    let doc = explain(id)?;
+    let Some(path) = report else {
+        return Ok(doc);
+    };
+    let v: serde_json::Value = std::fs::read_to_string(path)
+        .map_err(|e| (1, format!("why: {}: {e}", path.display())))
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| (1, format!("why: bad report: {e}"))))?;
+    let f = v["findings"]
+        .as_array()
+        .and_then(|a| a.iter().find(|f| f["id"] == id))
+        .ok_or_else(|| (1, format!("why: no finding '{id}' in {}", path.display())))?;
+    let tag = if f["passed"].as_bool().unwrap_or(false) {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    Ok(format!(
+        "[{tag}] {} {}: {}\n\n{doc}",
+        f["severity"].as_str().unwrap_or("?"),
+        id,
+        f["detail"].as_str().unwrap_or("")
+    ))
 }
 
 #[cfg(test)]
@@ -365,8 +454,39 @@ mod tests {
     }
 
     #[test]
-    fn rules_list_maps_to_issue_23() {
-        let cli = Cli::try_parse_from(["ble-doctor", "rules", "list"]).unwrap();
-        assert_eq!(cli.command.stub(), ("rules list", 23));
+    fn rules_list_json_len_matches_catalog() {
+        let v: serde_json::Value = serde_json::from_str(&rules_list(true)).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), crate::rules::RULES.len());
+    }
+
+    #[test]
+    fn explain_known_and_unknown() {
+        assert!(explain("mac_rotation")
+            .unwrap()
+            .contains("## What it means"));
+        let (code, msg) = explain("mac_rotaton").unwrap_err();
+        assert_eq!(code, 2);
+        assert!(msg.contains("did you mean: mac_rotation"), "{msg}");
+    }
+
+    #[test]
+    fn why_with_report() {
+        let dir = std::env::temp_dir().join(format!("bd-why-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.json");
+        std::fs::write(
+            &p,
+            r#"{"score":70,"findings":[{"id":"unauthenticated_writes","severity":"high","passed":false,"detail":"Writable: aaa1"}]}"#,
+        )
+        .unwrap();
+        let out = why("unauthenticated_writes", Some(&p)).unwrap();
+        assert!(out.contains("[FAIL] high unauthenticated_writes: Writable: aaa1"));
+        assert!(out.contains("## How to verify"));
+        assert_eq!(why("mac_rotation", Some(&p)).unwrap_err().0, 1);
+        assert_eq!(
+            why("mac_rotation", Some(&dir.join("nope"))).unwrap_err().0,
+            1
+        );
+        assert_eq!(why("bogus", None).unwrap_err().0, 2);
     }
 }
