@@ -26,7 +26,7 @@ futures = "0.3"
 ratatui = "0.30.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-bluer = { version = "0.17", features = ["l2cap"] }
+bluer = { version = "0.17", features = ["bluetoothd", "l2cap"] }
 libc = "0.2"
 # Peripheral-mode GATT server for the #20 MITM clone (Linux/BlueZ only).
 bluster = "0.1"
