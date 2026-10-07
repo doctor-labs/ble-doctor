@@ -2,7 +2,8 @@
 //! Always compiled (tiny, no hardware); the `test-support` feature is kept for gating later if it grows.
 
 use crate::error::BleError;
-use crate::radio::{Central, DiscoveredDevice};
+use crate::gatt::{GattChar, GattDescriptor, GattService};
+use crate::radio::{Central, DiscoveredDevice, GattClient, WriteError};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -122,6 +123,32 @@ impl FakeGattTree {
         self
     }
 
+    /// Convert to the enumeration types `GattClient::services` returns.
+    pub fn to_services(&self) -> Vec<GattService> {
+        self.services
+            .iter()
+            .map(|s| GattService {
+                uuid: s.uuid.clone(),
+                characteristics: s
+                    .characteristics
+                    .iter()
+                    .map(|c| GattChar {
+                        uuid: c.uuid.clone(),
+                        properties: c.properties.clone(),
+                        description: None,
+                        descriptors: c.descriptors.as_ref().map(|d| {
+                            d.iter()
+                                .map(|d| GattDescriptor {
+                                    uuid: d.uuid.clone(),
+                                })
+                                .collect()
+                        }),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
     pub fn characteristics(&self) -> impl Iterator<Item = &FakeCharacteristic> {
         self.services.iter().flat_map(|s| &s.characteristics)
     }
@@ -133,10 +160,6 @@ pub enum WriteOutcome {
     Accept,
     AttError(u8),
 }
-
-/// ATT error returned by a scripted write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttError(pub u8);
 
 /// Fake GATT client: scripted per-UUID reads/writes, records every write.
 /// Unscripted writes are accepted; unscripted reads give `CharNotFound`.
@@ -166,27 +189,33 @@ impl FakeClient {
         self
     }
 
-    pub async fn write(&self, uuid: &str, data: &[u8]) -> Result<(), AttError> {
+    /// Every write attempted so far, in order (uuid, payload).
+    pub fn writes(&self) -> Vec<(String, Vec<u8>)> {
+        self.writes.lock().unwrap().clone()
+    }
+}
+
+impl GattClient for FakeClient {
+    async fn services(&self) -> Result<Vec<GattService>, BleError> {
+        Ok(self.tree.to_services())
+    }
+
+    async fn write(&self, uuid: &str, data: &[u8]) -> Result<(), WriteError> {
         self.writes
             .lock()
             .unwrap()
             .push((uuid.into(), data.to_vec()));
         match self.write_outcomes.get(uuid) {
-            Some(WriteOutcome::AttError(c)) => Err(AttError(*c)),
+            Some(WriteOutcome::AttError(c)) => Err(WriteError::Att(*c)),
             _ => Ok(()),
         }
     }
 
-    pub async fn read(&self, uuid: &str) -> Result<Vec<u8>, BleError> {
+    async fn read(&self, uuid: &str) -> Result<Vec<u8>, BleError> {
         self.read_values
             .get(uuid)
             .cloned()
             .ok_or(BleError::CharNotFound)
-    }
-
-    /// Every write attempted so far, in order (uuid, payload).
-    pub fn writes(&self) -> Vec<(String, Vec<u8>)> {
-        self.writes.lock().unwrap().clone()
     }
 }
 
@@ -242,8 +271,8 @@ mod tests {
             )
             .script_write("ok", WriteOutcome::Accept)
             .script_read("r", &[1, 2]);
-        assert_eq!(c.write("ro", &[0]).await, Err(AttError(0x03)));
-        assert_eq!(c.write("auth", &[0]).await, Err(AttError(0x05)));
+        assert_eq!(c.write("ro", &[0]).await, Err(WriteError::Att(0x03)));
+        assert_eq!(c.write("auth", &[0]).await, Err(WriteError::Att(0x05)));
         assert_eq!(c.write("ok", &[9]).await, Ok(()));
         assert_eq!(c.write("unscripted", &[]).await, Ok(()));
         assert_eq!(c.writes().len(), 4);
