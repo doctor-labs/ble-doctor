@@ -30,6 +30,9 @@ pub enum Command {
         /// Emit the scored report as JSON (needs --target)
         #[arg(long, requires = "target")]
         json: bool,
+        /// Show the findings in an interactive terminal UI (needs --target)
+        #[arg(long, requires = "target", conflicts_with = "json")]
+        tui: bool,
         /// Write a SARIF 2.1.0 report to this file (needs --target)
         #[arg(long, requires = "target")]
         sarif: Option<std::path::PathBuf>,
@@ -320,6 +323,7 @@ pub fn run(cli: Cli) {
         target,
         timeout,
         json,
+        tui,
         sarif,
         baseline,
         fail_on,
@@ -390,6 +394,16 @@ pub fn run(cli: Cli) {
                                     }
                                     if *json {
                                         println!("{}", crate::report::to_json(&checks));
+                                        if gate(&checks) {
+                                            std::process::exit(crate::baseline::EXIT_GATE_FAILED);
+                                        }
+                                        return;
+                                    }
+                                    if *tui {
+                                        if let Err(e) = crate::tui::run_tui(score, &checks) {
+                                            eprintln!("tui: {e}");
+                                            std::process::exit(1);
+                                        }
                                         if gate(&checks) {
                                             std::process::exit(crate::baseline::EXIT_GATE_FAILED);
                                         }
