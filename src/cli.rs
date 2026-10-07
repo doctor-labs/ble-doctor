@@ -122,8 +122,11 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// CTF helpers
-    Ctf,
+    /// CTF helpers (own-gear / CTF scope only; never reachable via `mcp`)
+    Ctf {
+        #[command(subcommand)]
+        action: CtfCmd,
+    },
     /// Baseline snapshots
     Baseline,
     /// Export a handoff bundle
@@ -144,6 +147,65 @@ pub enum Command {
         /// A `--json` report file to pull the matching finding from
         #[arg(long)]
         report: Option<std::path::PathBuf>,
+    },
+}
+
+/// `ctf` subcommands: brute-write / read-N / write-then-read against a
+/// characteristic, carried over from v1's `solve_macos.py` helper patterns.
+/// Own-gear / CTF scope only; never wired into `mcp`.
+#[derive(Subcommand, Debug)]
+pub enum CtfCmd {
+    /// Write 0x00..=0xff to --char one byte at a time, reading --read-char back
+    /// after each write, until the read-back contains --contains.
+    Brute {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: String,
+        /// Characteristic UUID to brute-write
+        #[arg(long)]
+        char_uuid: String,
+        /// Characteristic UUID to read back after each write
+        #[arg(long)]
+        read_uuid: String,
+        /// Stop once the read-back value contains this substring (ASCII)
+        #[arg(long)]
+        contains: String,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+    },
+    /// Read a characteristic `n` times in a row
+    ReadN {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: String,
+        /// Characteristic UUID to read
+        #[arg(long)]
+        char_uuid: String,
+        /// Number of reads
+        #[arg(long, default_value_t = 1)]
+        n: usize,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+    },
+    /// Write a value, then read a (possibly different) characteristic back
+    WriteThenRead {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: String,
+        /// Characteristic UUID to write
+        #[arg(long)]
+        char_uuid: String,
+        /// Bytes to write, as hex (e.g. "01ff")
+        #[arg(long)]
+        data: String,
+        /// Characteristic UUID to read back
+        #[arg(long)]
+        read_uuid: String,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
     },
 }
 
@@ -176,7 +238,7 @@ impl Command {
             Command::Doctor => ("doctor", 4),
             Command::Mcp => ("mcp", 12),
             Command::Recon { .. } => ("recon", 21),
-            Command::Ctf => ("ctf", 22),
+            Command::Ctf { .. } => ("ctf", 22),
             Command::Baseline => ("baseline", 26),
             Command::Handoff { .. } => ("handoff", 27),
             Command::Rules { .. } | Command::Why { .. } => ("rules", 23),
@@ -704,6 +766,112 @@ pub fn run(cli: Cli) {
         }
         return;
     }
+    if let Command::Ctf { action } = &cli.command {
+        eprintln!(
+            "ctf: own-gear / CTF scope only (own hardware or a device you are authorized to test, \
+             e.g. hackgnar/ble_ctf). This writes to the device."
+        );
+        use crate::radio::{select_target_device, BtleplugCentral, BtleplugClient, Central};
+        match action {
+            CtfCmd::Brute {
+                target,
+                char_uuid,
+                read_uuid,
+                contains,
+                timeout,
+            } => {
+                let dur = std::time::Duration::from_secs(*timeout);
+                let res = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let devs = BtleplugCentral.scan(dur).await?;
+                        let d = select_target_device(&devs, target)?.clone();
+                        let c = BtleplugClient::connect(&d.id, dur).await?;
+                        Ok::<_, crate::error::BleError>(
+                            crate::ctf::brute_write(&c, char_uuid, read_uuid, |v| {
+                                String::from_utf8_lossy(v).contains(contains.as_str())
+                            })
+                            .await,
+                        )
+                    })
+                });
+                match res {
+                    Ok(Some((byte, value))) => println!(
+                        "found byte 0x{byte:02x} -> {:?} ({})",
+                        value,
+                        String::from_utf8_lossy(&value)
+                    ),
+                    Ok(None) => {
+                        println!("brute: exhausted 0x00..=0xff without a match");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("ctf brute: {e}\n  fix: {}", e.remediation());
+                        std::process::exit(1);
+                    }
+                }
+            }
+            CtfCmd::ReadN {
+                target,
+                char_uuid,
+                n,
+                timeout,
+            } => {
+                let dur = std::time::Duration::from_secs(*timeout);
+                let n = *n;
+                let res = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let devs = BtleplugCentral.scan(dur).await?;
+                        let d = select_target_device(&devs, target)?.clone();
+                        let c = BtleplugClient::connect(&d.id, dur).await?;
+                        Ok::<_, crate::error::BleError>(crate::ctf::read_n(&c, char_uuid, n).await)
+                    })
+                });
+                match res {
+                    Ok(values) => {
+                        for (i, v) in values.iter().enumerate() {
+                            println!("read {i}: {v:?} ({})", String::from_utf8_lossy(v));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("ctf read-n: {e}\n  fix: {}", e.remediation());
+                        std::process::exit(1);
+                    }
+                }
+            }
+            CtfCmd::WriteThenRead {
+                target,
+                char_uuid,
+                data,
+                read_uuid,
+                timeout,
+            } => {
+                let data = match hex_decode(data) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("ctf write-then-read: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let dur = std::time::Duration::from_secs(*timeout);
+                let res = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let devs = BtleplugCentral.scan(dur).await?;
+                        let d = select_target_device(&devs, target)?.clone();
+                        let c = BtleplugClient::connect(&d.id, dur).await?;
+                        crate::ctf::write_then_read(&c, char_uuid, &data, read_uuid).await
+                    })
+                });
+                match res {
+                    Ok(v) => println!("{v:?} ({})", String::from_utf8_lossy(&v)),
+                    Err(e) => {
+                        eprintln!("ctf write-then-read: {e}\n  fix: {}", e.remediation());
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+        return;
+    }
     if let Command::Doctor = &cli.command {
         use crate::{capability::Platform, doctor};
         let results = doctor::run_doctor(&doctor::Probes::detect(), Platform::current());
@@ -730,6 +898,17 @@ pub fn run(cli: Cli) {
     }
     let (name, issue) = cli.command.stub();
     println!("{name}: not yet implemented (#{issue})");
+}
+
+/// Decode a hex string (e.g. "01ff") into bytes for `ctf write-then-read --data`.
+fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    if !s.len().is_multiple_of(2) {
+        return Err(format!("odd-length hex string: {s:?}"));
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("bad hex {s:?}: {e}")))
+        .collect()
 }
 
 fn finish(r: Result<String, (i32, String)>) {
