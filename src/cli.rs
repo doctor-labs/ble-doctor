@@ -52,8 +52,21 @@ pub enum Command {
     Doctor,
     /// Run the MCP server
     Mcp,
-    /// Recon a target
-    Recon,
+    /// Recon a target (native GATT inventory)
+    Recon {
+        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+        #[arg(long, env = "BLE_DOCTOR_TARGET")]
+        target: String,
+        /// Scan/connect timeout in seconds
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+        /// Also run the external bluesploit cross-check (heuristic, INFO-only, never scored)
+        #[arg(long)]
+        bluesploit: bool,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// CTF helpers
     Ctf,
     /// Baseline snapshots
@@ -89,7 +102,7 @@ impl Command {
             Command::Dfu => ("dfu", 10),
             Command::Doctor => ("doctor", 4),
             Command::Mcp => ("mcp", 12),
-            Command::Recon => ("recon", 21),
+            Command::Recon { .. } => ("recon", 21),
             Command::Ctf => ("ctf", 22),
             Command::Baseline => ("baseline", 26),
             Command::Handoff => ("handoff", 27),
@@ -260,6 +273,70 @@ pub fn run(cli: Cli) {
             Err(e) => {
                 eprintln!("scan: {e}\n  fix: {}", e.remediation());
                 std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Recon {
+        target,
+        timeout,
+        bluesploit,
+        json,
+    } = &cli.command
+    {
+        use crate::radio::{
+            select_target_device, BtleplugCentral, BtleplugClient, Central, GattClient,
+        };
+        let dur = std::time::Duration::from_secs(*timeout);
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let devs = BtleplugCentral.scan(dur).await?;
+                let d = select_target_device(&devs, target)?.clone();
+                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+                let c = BtleplugClient::connect(&d.id, dur).await?;
+                let s = c.services().await?;
+                Ok::<_, crate::error::BleError>(crate::gatt::extract_gatt_fields(
+                    &s,
+                    &d.id,
+                    name.as_deref(),
+                ))
+            })
+        });
+        let gi = match res {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("recon: {e}\n  fix: {}", e.remediation());
+                std::process::exit(1);
+            }
+        };
+        let inv = crate::recon::inventory(&gi);
+        let bs = bluesploit.then(crate::recon::bluesploit_recon);
+        if *json {
+            let v = serde_json::json!({"inventory": inv, "bluesploit_crosscheck": bs});
+            println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        } else {
+            println!(
+                "target: {} ({})",
+                inv.target,
+                inv.target_name.as_deref().unwrap_or("-")
+            );
+            for s in &inv.services {
+                println!("service {}", s.uuid);
+                for c in &s.characteristics {
+                    println!(
+                        "  char {} [{}] writable={} subscribable={}",
+                        c.uuid,
+                        c.properties.join(","),
+                        c.writable,
+                        c.subscribable
+                    );
+                }
+            }
+            if let Some(b) = bs {
+                println!(
+                    "\nbluesploit cross-check (EXTERNAL, HEURISTIC scrape, INFO only, not scored):"
+                );
+                println!("{}", serde_json::to_string_pretty(&b).unwrap());
             }
         }
         return;
