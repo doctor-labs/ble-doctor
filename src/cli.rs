@@ -736,9 +736,10 @@ pub fn run(cli: Cli) {
                 match crate::fingerprint::collect_br_edr(d.address.as_deref().unwrap_or(target))
                     .await
                 {
-                    Ok((sdp, lmp)) => {
+                    Ok((sdp, lmp, notes)) => {
                         f.sdp = sdp;
                         f.lmp = lmp;
+                        f.notes.extend(notes);
                     }
                     Err(crate::error::BleError::Unsupported { .. }) => {
                         f.notes.push(crate::fingerprint::NOTE_NEEDS_LINUX.into())
@@ -781,9 +782,14 @@ pub fn run(cli: Cli) {
                 }
                 if let Some(l) = &f.lmp {
                     println!(
-                        "  lmp v{} mfr={} features={:?}",
-                        l.lmp_version, l.manufacturer, l.features
+                        "  lmp {} (v{}) mfr={} (0x{:04x}) subversion=0x{:04x}",
+                        l.version,
+                        l.lmp_version,
+                        l.manufacturer_name.as_deref().unwrap_or("unknown"),
+                        l.manufacturer,
+                        l.subversion
                     );
+                    println!("  lmp features: {}", l.features.join(", "));
                 }
                 for n in &f.notes {
                     println!("  note: {}", san(n));

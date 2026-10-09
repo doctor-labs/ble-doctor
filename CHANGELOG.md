@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `fingerprint` collects LMP data on Linux (#64): HCI Read Remote Supported Features, Extended Features (pages 1-2) and
+  Read Remote Version Information over a raw HCI socket (hci0, ACL handle via HCIGETCONNINFO). New `lmp` fields:
+  `version` (Bluetooth Core version), `manufacturer_name`, `pages`; `features` now names page 0..2 bits (Core Spec
+  Vol 2 Part C 3.3). An LMP failure becomes a note and SDP is still reported. No findings added. Not validated on
+  hardware: that is #70.
 - `analyze` extracts the SMP pairing exchange (L2CAP CID 6) from pcap (LE LL) and btsnoop (H4 / Linux monitor) captures (#65).
   Decoded PDUs and the derived pairing method go under `data.smp` (`{"seen": false}` when the capture has no SMP).
   New rules: `smp_legacy_pairing` (high), `smp_just_works` (medium), `smp_key_size` (high at <=7 bytes, medium below 16),
