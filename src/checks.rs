@@ -249,7 +249,7 @@ pub fn check_dfu_surface_absent(info: &GattInfo) -> CheckResult {
     )
 }
 
-/// Finding severity. Ordered: `Info < Low < Medium < High`. Serializes lowercase (v1 values).
+/// Finding severity. Ordered: `Info < Low < Medium < High < Critical`. Serializes lowercase (v1 values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -257,6 +257,7 @@ pub enum Severity {
     Low,
     Medium,
     High,
+    Critical,
 }
 
 impl Severity {
@@ -267,6 +268,7 @@ impl Severity {
             Severity::Low => "low",
             Severity::Medium => "medium",
             Severity::High => "high",
+            Severity::Critical => "critical",
         }
     }
 }

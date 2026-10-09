@@ -10,7 +10,7 @@ const INFORMATION_URI: &str = "https://github.com/Vaibhav91one/ble-doctor";
 
 fn level(s: Severity) -> &'static str {
     match s {
-        Severity::High => "error",
+        Severity::Critical | Severity::High => "error",
         Severity::Medium => "warning",
         Severity::Low | Severity::Info => "note",
     }
@@ -18,6 +18,7 @@ fn level(s: Severity) -> &'static str {
 
 fn security_severity(s: Severity) -> &'static str {
     match s {
+        Severity::Critical => "9.5",
         Severity::High => "8.5",
         Severity::Medium => "5.5",
         Severity::Low => "3.0",
@@ -68,7 +69,7 @@ fn mask_volatile(s: &str) -> String {
     out
 }
 
-/// Stable id of one finding: sha256(`id\nseverity\ndetail`), volatile numbers masked, first 32 hex.
+/// Stable id of one finding: sha256(`id\nseverity\ndetail`), volatile numbers masked, first 16 hex.
 pub fn fingerprint(r: &CheckResult) -> String {
     let text = format!(
         "{}\n{}\n{}",
@@ -80,12 +81,12 @@ pub fn fingerprint(r: &CheckResult) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    hex[..32].to_string()
+    hex[..16].to_string()
 }
 
-/// One SARIF run. `score` is recorded in run properties. `location` is the artifact URI
+/// One SARIF run. `score` (the doctor/1 score object) is recorded in run properties. `location` is the artifact URI
 /// (a capture path); `None` = live scan (logical "BLE device" location).
-pub fn to_sarif(score: u8, results: &[CheckResult], location: Option<&str>) -> Value {
+pub fn to_sarif(score: &Value, results: &[CheckResult], location: Option<&str>) -> Value {
     let failed: Vec<&CheckResult> = results.iter().filter(|r| !r.passed).collect();
     let mut worst: BTreeMap<&str, Severity> = BTreeMap::new();
     for r in &failed {
@@ -118,7 +119,7 @@ pub fn to_sarif(score: u8, results: &[CheckResult], location: Option<&str>) -> V
                 "level": level(r.severity),
                 "message": {"text": r.detail},
                 "locations": [loc.clone()],
-                "partialFingerprints": {"bleDoctorFinding/v1": fingerprint(r)},
+                "partialFingerprints": {"doctorFinding/v1": fingerprint(r)},
                 "properties": {"severity": r.severity.as_str()},
             })
         })
@@ -151,7 +152,7 @@ mod tests {
             r("b", Severity::Info, true, "ok"),
             r("c", Severity::Medium, false, "mid"),
         ];
-        let v = to_sarif(40, &rs, None);
+        let v = to_sarif(&json!(40), &rs, None);
         assert_eq!(v["version"], "2.1.0");
         assert_eq!(v["$schema"], SARIF_SCHEMA);
         let run = &v["runs"][0];
@@ -173,11 +174,11 @@ mod tests {
             "device"
         );
         assert_eq!(
-            res[0]["partialFingerprints"]["bleDoctorFinding/v1"]
+            res[0]["partialFingerprints"]["doctorFinding/v1"]
                 .as_str()
                 .unwrap()
                 .len(),
-            32
+            16
         );
         assert_eq!(security_severity(Severity::Low), "3.0");
         assert_eq!(security_severity(Severity::Info), "0.0");
@@ -187,7 +188,7 @@ mod tests {
     #[test]
     fn capture_location_is_physical() {
         let v = to_sarif(
-            100,
+            &json!(100),
             &[r("a", Severity::Low, false, "x")],
             Some("my cap.pcap"),
         );

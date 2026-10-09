@@ -13,18 +13,9 @@ pub const MAX_VALUE: usize = 300;
 /// Max findings in a bundle (v1 `MAX_FINDINGS`).
 pub const MAX_FINDINGS: usize = 20;
 
-/// Strip control / invisible / bidi / format characters (keeping a plain space) and cap at [`MAX_VALUE`] chars.
+/// The shared sanitizer ([`crate::report::sanitize`]) capped at [`MAX_VALUE`] chars.
 pub fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_whitespace() { ' ' } else { c })
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(*c as u32,
-                    0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
-                    | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE007F)
-        })
-        .take(MAX_VALUE)
-        .collect()
+    crate::report::sanitize(s).chars().take(MAX_VALUE).collect()
 }
 
 /// Per-rule follow-up for an agent; unknown ids get a generic review step.
@@ -64,7 +55,7 @@ pub fn handoff(findings: &[CheckResult]) -> Value {
     })
 }
 
-/// Read a `scan --json` report and build its bundle (no radio).
+/// Read a doctor/1 `--json` envelope and build its bundle (no radio).
 pub fn from_report(path: &Path) -> Result<Value, String> {
     let report = crate::baseline::load(path)?;
     let findings: Vec<CheckResult> = report["findings"]
@@ -75,8 +66,8 @@ pub fn from_report(path: &Path) -> Result<Value, String> {
             Some(CheckResult::new(
                 f["id"].as_str()?,
                 crate::baseline::parse_severity(f["severity"].as_str()?)?,
-                f["passed"].as_bool().unwrap_or(false),
-                f["detail"].as_str().unwrap_or(""),
+                false, // every doctor/1 finding is a failure
+                f["message"].as_str().unwrap_or(""),
             ))
         })
         .collect();

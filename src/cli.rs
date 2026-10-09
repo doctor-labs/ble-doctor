@@ -13,6 +13,8 @@ pub struct Cli {
     pub command: Command,
 }
 
+const SEVERITIES: [&str; 5] = ["info", "low", "medium", "high", "critical"];
+
 /// Top-level subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Command {
@@ -30,7 +32,7 @@ pub enum Command {
         /// Connect to --target presenting this BLE address (LE Set Random Address; Linux only)
         #[arg(long, requires = "target", conflicts_with = "mtu")]
         as_address: Option<String>,
-        /// Emit the scored report as JSON (needs --target)
+        /// Emit the doctor/1 JSON envelope (needs --target)
         #[arg(long, requires = "target")]
         json: bool,
         /// Show the findings in an interactive terminal UI (needs --target)
@@ -39,20 +41,29 @@ pub enum Command {
         /// Write a SARIF 2.1.0 report to this file (needs --target)
         #[arg(long, requires = "target")]
         sarif: Option<std::path::PathBuf>,
-        /// Diff findings against a saved `--json` report; exit 3 if NEW failures reach --fail-on
+        /// Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
         #[arg(long, requires = "target")]
         baseline: Option<std::path::PathBuf>,
-        /// Severity gate for new failures (with --baseline)
-        #[arg(long, default_value = "high", value_parser = ["info", "low", "medium", "high"], requires = "baseline")]
+        /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
+        #[arg(long, default_value = "high", value_parser = SEVERITIES)]
         fail_on: String,
     },
     /// Analyze a capture or device
     Analyze {
         /// Path to a btsnoop/pcap capture
         capture: std::path::PathBuf,
-        /// Emit JSON
+        /// Emit the doctor/1 JSON envelope
         #[arg(long)]
         json: bool,
+        /// Write a SARIF 2.1.0 report to this file
+        #[arg(long)]
+        sarif: Option<std::path::PathBuf>,
+        /// Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
+        #[arg(long)]
+        baseline: Option<std::path::PathBuf>,
+        /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
+        #[arg(long, default_value = "high", value_parser = SEVERITIES)]
+        fail_on: String,
     },
     /// Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device
     Sniff {
@@ -283,29 +294,45 @@ pub fn run(cli: Cli) {
         crate::mcp::serve();
         return;
     }
-    if let Command::Analyze { capture, json } = &cli.command {
+    if let Command::Analyze {
+        capture,
+        json,
+        sarif,
+        baseline,
+        fail_on,
+    } = &cli.command
+    {
         let res = std::fs::read(capture)
             .map_err(|e| e.to_string())
             .and_then(|b| crate::capture::parse_capture(&b));
         match res {
             Ok(info) => {
                 let r = crate::capture::check_mac_rotation(&info);
-                if *json {
-                    let v = serde_json::json!({"capture": info, "checks": [r]});
-                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
-                } else {
-                    println!(
-                        "capture: {} ({} adv frames)",
-                        info.capture_flavour.as_deref().unwrap_or("unknown"),
-                        info.adv_mac_addresses.len()
-                    );
-                    let tag = if r.passed { "PASS" } else { "FAIL" };
-                    println!("[{tag}] {:?} {}: {}", r.severity, r.id, r.detail);
+                let loc = serde_json::json!({"kind": "file", "ref": capture.display().to_string()});
+                let human = format!(
+                    "capture: {} ({} adv frames)\n{}",
+                    crate::report::sanitize(info.capture_flavour.as_deref().unwrap_or("unknown")),
+                    info.adv_mac_addresses.len(),
+                    crate::report::to_table(std::slice::from_ref(&r))
+                );
+                let extra = serde_json::json!({"capture": info});
+                let code = emit(
+                    &[r],
+                    &loc,
+                    extra,
+                    *json,
+                    sarif,
+                    baseline,
+                    fail_on,
+                    Some(&human),
+                );
+                if code != 0 {
+                    std::process::exit(code);
                 }
             }
             Err(e) => {
-                eprintln!("analyze: {e}");
-                std::process::exit(1);
+                eprintln!("analyze: {}", crate::report::sanitize(&e));
+                fail();
             }
         }
         return;
@@ -338,7 +365,7 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("sniff: {e}");
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -357,7 +384,7 @@ pub fn run(cli: Cli) {
             Ok(()) => println!("connected to {t} as {a}"),
             Err(e) => {
                 eprintln!("as-address: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -375,7 +402,7 @@ pub fn run(cli: Cli) {
             Ok(n) => println!("negotiated MTU: {n}"),
             Err(e) => {
                 eprintln!("mtu: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -392,38 +419,34 @@ pub fn run(cli: Cli) {
     } = &cli.command
     {
         use crate::radio::{select_target_device, BtleplugCentral, Central};
-        let base = match baseline.as_deref().map(crate::baseline::load).transpose() {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("scan: {e}");
-                std::process::exit(1);
-            }
-        };
-        let gate = |checks: &[crate::checks::CheckResult]| -> bool {
-            let sev = crate::baseline::parse_severity(fail_on).expect("clap-validated");
-            base.as_ref()
-                .is_some_and(|b| crate::baseline::report_and_gate(checks, b, sev))
-        };
         let dur = std::time::Duration::from_secs(*timeout);
         let res = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(BtleplugCentral.scan(dur))
         });
         match res {
             Ok(devs) => {
+                // --json: stdout carries only the envelope, so the device list goes to stderr.
                 for d in &devs {
-                    println!(
+                    let line = format!(
                         "{}  addr={} name={} adv={} rssi={}",
-                        d.id,
+                        crate::report::sanitize(&d.id),
                         d.address.as_deref().unwrap_or("-"),
-                        d.name.as_deref().unwrap_or("-"),
-                        d.adv_local_name.as_deref().unwrap_or("-"),
+                        crate::report::sanitize(d.name.as_deref().unwrap_or("-")),
+                        crate::report::sanitize(d.adv_local_name.as_deref().unwrap_or("-")),
                         d.rssi.map_or("-".into(), |r| r.to_string())
                     );
+                    if *json {
+                        eprintln!("{line}");
+                    } else {
+                        println!("{line}");
+                    }
                 }
                 if let Some(t) = target {
                     match select_target_device(&devs, t) {
                         Ok(d) => {
-                            println!("selected: {}", d.id);
+                            if !*json {
+                                println!("selected: {}", crate::report::sanitize(&d.id));
+                            }
                             let id = d.id.clone();
                             let dev = d.clone();
                             let name = d.adv_local_name.clone().or_else(|| d.name.clone());
@@ -446,29 +469,41 @@ pub fn run(cli: Cli) {
                                         crate::checks::check_dfu_signing_enforced(&g),
                                         crate::checks::check_dfu_surface_absent(&g),
                                     ];
-                                    let score = crate::report::compute_score(&checks);
-                                    if let Some(path) = sarif {
-                                        let v = crate::sarif::to_sarif(score, &checks, None);
-                                        let body = serde_json::to_string_pretty(&v).unwrap();
-                                        if let Err(e) = std::fs::write(path, body) {
-                                            eprintln!("sarif: {}: {e}", path.display());
-                                            std::process::exit(1);
-                                        }
-                                    }
+                                    let loc = serde_json::json!({"kind": "device", "ref": t});
                                     if *json {
-                                        println!("{}", crate::report::to_json(&checks));
-                                        if gate(&checks) {
-                                            std::process::exit(crate::baseline::EXIT_GATE_FAILED);
+                                        let code = emit(
+                                            &checks,
+                                            &loc,
+                                            serde_json::json!({}),
+                                            true,
+                                            sarif,
+                                            baseline,
+                                            fail_on,
+                                            None,
+                                        );
+                                        if code != 0 {
+                                            std::process::exit(code);
                                         }
                                         return;
                                     }
                                     if *tui {
+                                        let score = crate::report::compute_score(&checks);
                                         if let Err(e) = crate::tui::run_tui(score, &checks) {
                                             eprintln!("tui: {e}");
-                                            std::process::exit(1);
+                                            fail();
                                         }
-                                        if gate(&checks) {
-                                            std::process::exit(crate::baseline::EXIT_GATE_FAILED);
+                                        let code = emit(
+                                            &checks,
+                                            &loc,
+                                            serde_json::json!({}),
+                                            false,
+                                            sarif,
+                                            baseline,
+                                            fail_on,
+                                            None,
+                                        );
+                                        if code != 0 {
+                                            std::process::exit(code);
                                         }
                                         return;
                                     }
@@ -487,27 +522,37 @@ pub fn run(cli: Cli) {
                                     for s in &g.subscribe_chars {
                                         println!("  notify {} cccd={:?}", s.uuid, s.cccd);
                                     }
-                                    println!("\n{}", crate::report::to_table(&checks));
-                                    if gate(&checks) {
-                                        std::process::exit(crate::baseline::EXIT_GATE_FAILED);
+                                    let human = format!("\n{}", crate::report::to_table(&checks));
+                                    let code = emit(
+                                        &checks,
+                                        &loc,
+                                        serde_json::json!({}),
+                                        false,
+                                        sarif,
+                                        baseline,
+                                        fail_on,
+                                        Some(&human),
+                                    );
+                                    if code != 0 {
+                                        std::process::exit(code);
                                     }
                                 }
                                 Err(e) => {
                                     eprintln!("gatt: {e}\n  fix: {}", e.remediation());
-                                    std::process::exit(1);
+                                    fail();
                                 }
                             }
                         }
                         Err(e) => {
                             eprintln!("scan: {e}");
-                            std::process::exit(1);
+                            fail();
                         }
                     }
                 }
             }
             Err(e) => {
                 eprintln!("scan: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -541,7 +586,7 @@ pub fn run(cli: Cli) {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("recon: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         };
         let inv = crate::recon::inventory(&gi);
@@ -590,11 +635,11 @@ pub fn run(cli: Cli) {
                  --allow-dangerous to proceed; firmware/DFU characteristics are still \
                  refused regardless."
             );
-            std::process::exit(1);
+            fail();
         }
         let Some(target) = target else {
             eprintln!("probe-writes: --target is required");
-            std::process::exit(1);
+            fail();
         };
         use crate::radio::{
             connect_client, select_target_device, BtleplugCentral, Central, GattClient,
@@ -644,7 +689,7 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("probe-writes: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -657,7 +702,7 @@ pub fn run(cli: Cli) {
     {
         let Some(target) = target else {
             eprintln!("fingerprint: --target is required");
-            std::process::exit(1);
+            fail();
         };
         use crate::radio::{
             connect_client, select_target_device, BtleplugCentral, Central, GattClient,
@@ -726,7 +771,7 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("fingerprint: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -734,7 +779,7 @@ pub fn run(cli: Cli) {
     if let Command::ReadValues { target, timeout } = &cli.command {
         let Some(target) = target else {
             eprintln!("read-values: --target is required");
-            std::process::exit(1);
+            fail();
         };
         eprintln!(
             "read-values: reading can change device state (scope: own hardware or written \
@@ -768,7 +813,7 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("read-values: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -787,11 +832,11 @@ pub fn run(cli: Cli) {
                  without bonding (scope: own hardware or written authorization only). Pass \
                  --allow-dangerous to proceed."
             );
-            std::process::exit(1);
+            fail();
         }
         let Some(target) = target else {
             eprintln!("dfu: --target is required");
-            std::process::exit(1);
+            fail();
         };
         use crate::radio::{
             connect_client, select_target_device, BtleplugCentral, Central, GattClient,
@@ -838,7 +883,7 @@ pub fn run(cli: Cli) {
             }
             Err(e) => {
                 eprintln!("dfu: {e}\n  fix: {}", e.remediation());
-                std::process::exit(1);
+                fail();
             }
         }
         return;
@@ -883,7 +928,7 @@ pub fn run(cli: Cli) {
                     }
                     Err(e) => {
                         eprintln!("ctf brute: {e}\n  fix: {}", e.remediation());
-                        std::process::exit(1);
+                        fail();
                     }
                 }
             }
@@ -911,7 +956,7 @@ pub fn run(cli: Cli) {
                     }
                     Err(e) => {
                         eprintln!("ctf read-n: {e}\n  fix: {}", e.remediation());
-                        std::process::exit(1);
+                        fail();
                     }
                 }
             }
@@ -926,7 +971,7 @@ pub fn run(cli: Cli) {
                     Ok(d) => d,
                     Err(e) => {
                         eprintln!("ctf write-then-read: {e}");
-                        std::process::exit(1);
+                        fail();
                     }
                 };
                 let dur = std::time::Duration::from_secs(*timeout);
@@ -942,7 +987,7 @@ pub fn run(cli: Cli) {
                     Ok(v) => println!("{v:?} ({})", String::from_utf8_lossy(&v)),
                     Err(e) => {
                         eprintln!("ctf write-then-read: {e}\n  fix: {}", e.remediation());
-                        std::process::exit(1);
+                        fail();
                     }
                 }
             }
@@ -960,7 +1005,7 @@ pub fn run(cli: Cli) {
                  real device by cloning it as a peripheral (scope: own hardware or written \
                  authorization only). Pass --allow-dangerous to proceed."
             );
-            std::process::exit(1);
+            fail();
         }
         #[cfg(target_os = "linux")]
         {
@@ -970,7 +1015,7 @@ pub fn run(cli: Cli) {
             });
             if let Err(e) = res {
                 eprintln!("mitm: {e}");
-                std::process::exit(1);
+                fail();
             }
             return;
         }
@@ -983,7 +1028,7 @@ pub fn run(cli: Cli) {
                 "mitm: {err}\n  fix: needs Linux with 2 adapters + peripheral mode (bluster); \
                  not available on this platform."
             );
-            std::process::exit(1);
+            fail();
         }
     }
     if let Command::Doctor = &cli.command {
@@ -1006,7 +1051,7 @@ pub fn run(cli: Cli) {
         finish(
             crate::handoff::from_report(report)
                 .map(|v| serde_json::to_string_pretty(&v).unwrap() + "\n")
-                .map_err(|e| (1, format!("handoff: {e}"))),
+                .map_err(|e| (2, format!("handoff: {e}"))),
         );
         return;
     }
@@ -1015,6 +1060,63 @@ pub fn run(cli: Cli) {
 }
 
 /// Decode a hex string (e.g. "01ff") into bytes for `ctf write-then-read --data`.
+/// Error exit (doctor/1: 2 = usage error, bad input, or the tool could not run). The single place
+/// every error path leaves through.
+fn fail() -> ! {
+    std::process::exit(2)
+}
+
+/// Shared tail of the findings commands (scan, analyze): baseline, exit code, SARIF, output.
+/// Prints the envelope (`json`) or `human` (plus the baseline diff on stderr); returns the exit code.
+#[allow(clippy::too_many_arguments)]
+fn emit(
+    checks: &[crate::checks::CheckResult],
+    loc: &serde_json::Value,
+    extra: serde_json::Value,
+    json: bool,
+    sarif: &Option<std::path::PathBuf>,
+    baseline: &Option<std::path::PathBuf>,
+    fail_on: &str,
+    human: Option<&str>,
+) -> i32 {
+    use crate::baseline;
+    let sev = baseline::parse_severity(fail_on).expect("clap-validated");
+    let base = match baseline.as_deref().map(baseline::load).transpose() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{}", crate::report::sanitize(&e));
+            fail();
+        }
+    };
+    let diff = base.as_ref().map(|b| baseline::diff(checks, b));
+    let code = crate::report::gate_exit(
+        checks,
+        sev,
+        diff.as_ref().map(|d| d.new_failures.as_slice()),
+    );
+    let env = crate::report::to_envelope(checks, loc, base.as_ref(), code, extra);
+    if let Some(path) = sarif {
+        let v = crate::sarif::to_sarif(
+            &env["score"],
+            checks,
+            loc["ref"].as_str().filter(|_| loc["kind"] == "file"),
+        );
+        if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap()) {
+            eprintln!("sarif: {}: {e}", path.display());
+            fail();
+        }
+    }
+    if let Some(d) = &diff {
+        baseline::report_diff(d);
+    }
+    if json {
+        println!("{}", crate::report::to_json(&env));
+    } else if let Some(h) = human {
+        println!("{h}");
+    }
+    code
+}
+
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) {
         return Err(format!("odd-length hex string: {s:?}"));
@@ -1070,29 +1172,30 @@ fn explain(id: &str) -> Result<String, (i32, String)> {
         })
 }
 
-/// Rule doc, preceded by the matching finding when a report is given (exit 1 on a bad report).
+/// Rule doc, preceded by the matching finding when a report is given (exit 2 on a bad report).
 fn why(id: &str, report: Option<&std::path::Path>) -> Result<String, (i32, String)> {
     let doc = explain(id)?;
     let Some(path) = report else {
         return Ok(doc);
     };
     let v: serde_json::Value = std::fs::read_to_string(path)
-        .map_err(|e| (1, format!("why: {}: {e}", path.display())))
-        .and_then(|t| serde_json::from_str(&t).map_err(|e| (1, format!("why: bad report: {e}"))))?;
-    let f = v["findings"]
-        .as_array()
-        .and_then(|a| a.iter().find(|f| f["id"] == id))
-        .ok_or_else(|| (1, format!("why: no finding '{id}' in {}", path.display())))?;
-    let tag = if f["passed"].as_bool().unwrap_or(false) {
-        "PASS"
-    } else {
-        "FAIL"
+        .map_err(|e| (2, format!("why: {}: {e}", path.display())))
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| (2, format!("why: bad report: {e}"))))?;
+    let find = |arr: &serde_json::Value| {
+        arr.as_array()
+            .and_then(|a| a.iter().find(|f| f["id"] == id))
+            .cloned()
+    };
+    let (f, tag) = match (find(&v["findings"]), find(&v["data"]["passed"])) {
+        (Some(f), _) => (f, "FAIL"),
+        (None, Some(f)) => (f, "PASS"),
+        _ => return Err((2, format!("why: no finding '{id}' in {}", path.display()))),
     };
     Ok(format!(
         "[{tag}] {} {}: {}\n\n{doc}",
-        f["severity"].as_str().unwrap_or("?"),
+        crate::report::sanitize(f["severity"].as_str().unwrap_or("?")),
         id,
-        f["detail"].as_str().unwrap_or("")
+        crate::report::sanitize(f["message"].as_str().or(f["detail"].as_str()).unwrap_or(""))
     ))
 }
 
@@ -1129,16 +1232,16 @@ mod tests {
         let p = dir.join("r.json");
         std::fs::write(
             &p,
-            r#"{"score":70,"findings":[{"id":"unauthenticated_writes","severity":"high","passed":false,"detail":"Writable: aaa1"}]}"#,
+            r#"{"schema":"doctor/1","score":{"value":70},"findings":[{"id":"unauthenticated_writes","severity":"high","message":"Writable: aaa1"}],"data":{"passed":[]}}"#,
         )
         .unwrap();
         let out = why("unauthenticated_writes", Some(&p)).unwrap();
         assert!(out.contains("[FAIL] high unauthenticated_writes: Writable: aaa1"));
         assert!(out.contains("## How to verify"));
-        assert_eq!(why("mac_rotation", Some(&p)).unwrap_err().0, 1);
+        assert_eq!(why("mac_rotation", Some(&p)).unwrap_err().0, 2);
         assert_eq!(
             why("mac_rotation", Some(&dir.join("nope"))).unwrap_err().0,
-            1
+            2
         );
         assert_eq!(why("bogus", None).unwrap_err().0, 2);
     }
