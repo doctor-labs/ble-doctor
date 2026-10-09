@@ -23,9 +23,15 @@ pub struct SdpInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LmpInfo {
     pub lmp_version: u8,
+    /// Bluetooth Core version for `lmp_version`, e.g. "Bluetooth 5.2".
+    pub version: String,
     pub manufacturer: u16,
+    pub manufacturer_name: Option<String>,
     pub subversion: u16,
+    /// Feature page 0 as 16 hex chars (byte 0 first).
     pub features_hex: String,
+    /// Feature pages 0..=2 as hex (as many as the peer reported).
+    pub pages: Vec<String>,
     pub features: Vec<String>,
 }
 
@@ -157,55 +163,179 @@ pub fn parse_sdp_response(pdu: &[u8]) -> Result<SdpInfo, String> {
     Ok(SdpInfo { records })
 }
 
-/// Names for the well-known LMP feature bits (page 0).
-fn lmp_feature_names(f: &[u8; 8]) -> Vec<String> {
-    const BITS: &[(usize, u8, &str)] = &[
-        (0, 0, "3-slot packets"),
-        (0, 1, "5-slot packets"),
-        (0, 2, "encryption"),
-        (0, 3, "slot offset"),
-        (0, 4, "timing accuracy"),
-        (0, 5, "role switch"),
-        (0, 6, "hold mode"),
-        (0, 7, "sniff mode"),
-        (3, 1, "EDR ACL 2 Mb/s"),
-        (3, 2, "EDR ACL 3 Mb/s"),
-        (4, 6, "LE supported (controller)"),
-    ];
-    BITS.iter()
-        .filter(|(i, bit, _)| f[*i] >> bit & 1 == 1)
-        .map(|(_, _, n)| n.to_string())
+/// Core Spec Vol 2 Part C 3.3 "Link Manager Supported Features" bit names:
+/// `(page, byte, bit, name)`. Page 0 = Table 3.2, page 1 = host features, page 2 = Table 3.3 (ext.).
+/// Reserved / RFU bits are omitted.
+const FEATURE_BITS: &[(usize, usize, u8, &str)] = &[
+    (0, 0, 0, "3-slot packets"),
+    (0, 0, 1, "5-slot packets"),
+    (0, 0, 2, "encryption"),
+    (0, 0, 3, "slot offset"),
+    (0, 0, 4, "timing accuracy"),
+    (0, 0, 5, "role switch"),
+    (0, 0, 6, "hold mode"),
+    (0, 0, 7, "sniff mode"),
+    (0, 1, 1, "power control requests"),
+    (0, 1, 2, "channel quality driven data rate"),
+    (0, 1, 3, "SCO link"),
+    (0, 1, 4, "HV2 packets"),
+    (0, 1, 5, "HV3 packets"),
+    (0, 1, 6, "u-law log synchronous data"),
+    (0, 1, 7, "A-law log synchronous data"),
+    (0, 2, 0, "CVSD synchronous data"),
+    (0, 2, 1, "paging parameter negotiation"),
+    (0, 2, 2, "power control"),
+    (0, 2, 3, "transparent synchronous data"),
+    (0, 2, 7, "broadcast encryption"),
+    (0, 3, 1, "EDR ACL 2 Mb/s"),
+    (0, 3, 2, "EDR ACL 3 Mb/s"),
+    (0, 3, 3, "enhanced inquiry scan"),
+    (0, 3, 4, "interlaced inquiry scan"),
+    (0, 3, 5, "interlaced page scan"),
+    (0, 3, 6, "RSSI with inquiry results"),
+    (0, 3, 7, "extended SCO link (EV3)"),
+    (0, 4, 0, "EV4 packets"),
+    (0, 4, 1, "EV5 packets"),
+    (0, 4, 3, "AFH capable peripheral"),
+    (0, 4, 4, "AFH classification peripheral"),
+    (0, 4, 5, "BR/EDR not supported"),
+    (0, 4, 6, "LE supported (controller)"),
+    (0, 4, 7, "3-slot EDR ACL packets"),
+    (0, 5, 0, "5-slot EDR ACL packets"),
+    (0, 5, 1, "sniff subrating"),
+    (0, 5, 2, "pause encryption"),
+    (0, 5, 3, "AFH capable central"),
+    (0, 5, 4, "AFH classification central"),
+    (0, 5, 5, "EDR eSCO 2 Mb/s"),
+    (0, 5, 6, "EDR eSCO 3 Mb/s"),
+    (0, 5, 7, "3-slot EDR eSCO packets"),
+    (0, 6, 0, "extended inquiry response"),
+    (0, 6, 1, "simultaneous LE and BR/EDR (controller)"),
+    (0, 6, 3, "Secure Simple Pairing (controller)"),
+    (0, 6, 4, "encapsulated PDU"),
+    (0, 6, 5, "erroneous data reporting"),
+    (0, 6, 6, "non-flushable packet boundary flag"),
+    (0, 7, 0, "link supervision timeout changed event"),
+    (0, 7, 1, "inquiry TX power level"),
+    (0, 7, 2, "enhanced power control"),
+    (0, 7, 7, "extended features"),
+    (1, 0, 0, "Secure Simple Pairing (host)"),
+    (1, 0, 1, "LE supported (host)"),
+    (1, 0, 2, "simultaneous LE and BR/EDR (host)"),
+    (1, 0, 3, "Secure Connections (host)"),
+    (2, 0, 0, "connectionless peripheral broadcast transmitter"),
+    (2, 0, 1, "connectionless peripheral broadcast receiver"),
+    (2, 0, 2, "synchronization train"),
+    (2, 0, 3, "synchronization scan"),
+    (2, 0, 4, "inquiry response notification event"),
+    (2, 0, 5, "generalized interlaced scan"),
+    (2, 0, 6, "coarse clock adjustment"),
+    (2, 1, 0, "Secure Connections (controller)"),
+    (2, 1, 1, "ping"),
+    (2, 1, 2, "slot availability mask"),
+    (2, 1, 3, "train nudging"),
+];
+
+/// Named features set in `pages[0..=2]` (8 bytes each).
+pub fn lmp_feature_names(pages: &[[u8; 8]]) -> Vec<String> {
+    FEATURE_BITS
+        .iter()
+        .filter(|(p, byte, bit, _)| pages.get(*p).is_some_and(|f| f[*byte] >> bit & 1 == 1))
+        .map(|(_, _, _, n)| n.to_string())
         .collect()
 }
 
-/// Build `LmpInfo` from the 8-byte remote features and an HCI Read Remote Version
-/// Complete event's parameters (status, handle:2, version, manufacturer:2, subversion:2).
-pub fn parse_lmp(features: &[u8], version_evt: &[u8]) -> Result<LmpInfo, String> {
-    let f: [u8; 8] = features
-        .try_into()
-        .map_err(|_| "LMP features must be 8 bytes")?;
+/// LMP VersNr -> Bluetooth Core version (Assigned Numbers, "LMP Version").
+pub fn core_version(lmp: u8) -> String {
+    const V: &[&str] = &[
+        "1.0b",
+        "1.1",
+        "1.2",
+        "2.0 + EDR",
+        "2.1 + EDR",
+        "3.0 + HS",
+        "4.0",
+        "4.1",
+        "4.2",
+        "5.0",
+        "5.1",
+        "5.2",
+        "5.3",
+        "5.4",
+        "6.0",
+    ];
+    V.get(lmp as usize)
+        .map(|v| format!("Bluetooth {v}"))
+        .unwrap_or_else(|| format!("unknown (LMP {lmp})"))
+}
+
+/// Company identifier -> name (Assigned Numbers, "Company Identifiers"). Compact subset of
+/// common controller vendors; unknown ids yield `None` (the numeric id is always reported).
+pub fn company_name(id: u16) -> Option<&'static str> {
+    Some(match id {
+        0x0000 => "Ericsson Technology Licensing",
+        0x0001 => "Nokia Mobile Phones",
+        0x0002 => "Intel Corp.",
+        0x0003 => "IBM Corp.",
+        0x0004 => "Toshiba Corp.",
+        0x0006 => "Microsoft",
+        0x0008 => "Motorola",
+        0x0009 => "Infineon Technologies AG",
+        0x000A => "Qualcomm Technologies International, Ltd. (CSR)",
+        0x000D => "Texas Instruments Inc.",
+        0x000F => "Broadcom Corporation",
+        0x001D => "Qualcomm",
+        0x0030 => "STMicroelectronics",
+        0x0046 => "MediaTek, Inc.",
+        0x004C => "Apple, Inc.",
+        0x0059 => "Nordic Semiconductor ASA",
+        0x005D => "Realtek Semiconductor Corporation",
+        0x0075 => "Samsung Electronics Co. Ltd.",
+        0x0087 => "Garmin International, Inc.",
+        0x00E0 => "Google",
+        0x0131 => "Cypress Semiconductor",
+        _ => return None,
+    })
+}
+
+/// Build `LmpInfo` from the remote feature pages (0..=2, 8 bytes each) and an HCI Read Remote
+/// Version Complete event's parameters (status, handle:2, version, manufacturer:2, subversion:2).
+pub fn parse_lmp(pages: &[[u8; 8]], version_evt: &[u8]) -> Result<LmpInfo, String> {
+    let hex = |f: &[u8; 8]| f.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let Some(p0) = pages.first() else {
+        return Err("no LMP feature page".into());
+    };
     match version_evt {
-        [0, _, _, ver, m0, m1, s0, s1] => Ok(LmpInfo {
-            lmp_version: *ver,
-            manufacturer: u16::from_le_bytes([*m0, *m1]),
-            subversion: u16::from_le_bytes([*s0, *s1]),
-            features_hex: f.iter().map(|x| format!("{x:02x}")).collect(),
-            features: lmp_feature_names(&f),
-        }),
+        [0, _, _, ver, m0, m1, s0, s1] => {
+            let manufacturer = u16::from_le_bytes([*m0, *m1]);
+            Ok(LmpInfo {
+                lmp_version: *ver,
+                version: core_version(*ver),
+                manufacturer,
+                manufacturer_name: company_name(manufacturer).map(String::from),
+                subversion: u16::from_le_bytes([*s0, *s1]),
+                features_hex: hex(p0),
+                pages: pages.iter().map(hex).collect(),
+                features: lmp_feature_names(pages),
+            })
+        }
         _ => Err("bad Read Remote Version Complete event".into()),
     }
 }
 
 // ---------- collection (Linux only) ----------
 
-/// Collect SDP + LMP for BD_ADDR `addr`. Off Linux: `(None, None)` plus a note.
-pub async fn collect_br_edr(addr: &str) -> Result<(Option<SdpInfo>, Option<LmpInfo>), BleError> {
+/// SDP, LMP, and notes (e.g. LMP failed while SDP worked).
+pub type BrEdrResult = Result<(Option<SdpInfo>, Option<LmpInfo>, Vec<String>), BleError>;
+
+/// Collect SDP + LMP for BD_ADDR `addr`. Off Linux: `an Unsupported error.
+pub async fn collect_br_edr(addr: &str) -> BrEdrResult {
     crate::radio::raw::ensure_raw_supported()?;
     collect_impl(addr).await
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn collect_impl(_addr: &str) -> Result<(Option<SdpInfo>, Option<LmpInfo>), BleError> {
+async fn collect_impl(_addr: &str) -> BrEdrResult {
     Err(BleError::Unsupported {
         feature: "SDP/LMP fingerprint".into(),
         platform: std::env::consts::OS.into(),
@@ -213,7 +343,7 @@ async fn collect_impl(_addr: &str) -> Result<(Option<SdpInfo>, Option<LmpInfo>),
 }
 
 #[cfg(target_os = "linux")]
-async fn collect_impl(addr: &str) -> Result<(Option<SdpInfo>, Option<LmpInfo>), BleError> {
+async fn collect_impl(addr: &str) -> BrEdrResult {
     use bluer::l2cap::{SocketAddr, Stream};
     use bluer::AddressType;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -237,9 +367,22 @@ async fn collect_impl(addr: &str) -> Result<(Option<SdpInfo>, Option<LmpInfo>), 
     let mut buf = vec![0u8; 4096];
     let n = s.read(&mut buf).await.map_err(|e| os(&e))?;
     let sdp = parse_sdp_response(&buf[..n]).map_err(|c| BleError::OsError { context: c })?;
-    // ponytail: LMP needs the ACL handle + HCI event read loop; unverifiable without
-    // hardware, deferred (see docs/DEFERRED-TESTS.md #18). parse_lmp is ready for it.
-    Ok((Some(sdp), None))
+    // The L2CAP link above keeps the ACL connection up; query LMP over a raw HCI socket on it.
+    // ponytail: hci0 only (matches raw::send_hci_command); take --adapter when multi-adapter matters.
+    let peer_bytes = crate::radio::raw::parse_bd_addr(addr)?;
+    let lmp = tokio::task::spawn_blocking(move || {
+        let mut hci = crate::hci_lmp::linux::RawHci::open(0, 5)?;
+        let handle = hci.acl_handle(peer_bytes)?;
+        crate::hci_lmp::read_remote_lmp(&mut hci, handle)
+            .map_err(|context| BleError::OsError { context })
+    })
+    .await
+    .map_err(|e| os(&e))?;
+    drop(s);
+    Ok(match lmp {
+        Ok(l) => (Some(sdp), Some(l), vec![]),
+        Err(e) => (Some(sdp), None, vec![format!("LMP failed: {e}")]),
+    })
 }
 
 #[cfg(test)]
@@ -298,17 +441,41 @@ mod tests {
     fn lmp_sample() {
         let feat = [0xFF, 0, 0, 0x06, 0x40, 0, 0, 0];
         let evt = [0, 0x40, 0, 0x09, 0x0F, 0x00, 0x34, 0x12];
-        let l = parse_lmp(&feat, &evt).unwrap();
+        let l = parse_lmp(&[feat], &evt).unwrap();
         assert_eq!(
             (l.lmp_version, l.manufacturer, l.subversion),
             (9, 15, 0x1234)
         );
+        assert_eq!(l.version, "Bluetooth 5.0");
+        assert_eq!(l.manufacturer_name.as_deref(), Some("Broadcom Corporation"));
         assert!(l.features.contains(&"sniff mode".to_string()));
         assert!(l.features.contains(&"EDR ACL 3 Mb/s".to_string()));
         assert!(l
             .features
             .contains(&"LE supported (controller)".to_string()));
-        assert!(parse_lmp(&feat[..7], &evt).is_err());
+        assert!(parse_lmp(&[], &evt).is_err());
+        assert!(parse_lmp(&[feat], &evt[1..]).is_err());
+    }
+
+    #[test]
+    fn decoders() {
+        assert_eq!(core_version(0), "Bluetooth 1.0b");
+        assert_eq!(core_version(14), "Bluetooth 6.0");
+        assert_eq!(core_version(99), "unknown (LMP 99)");
+        assert_eq!(company_name(0x004C), Some("Apple, Inc."));
+        assert_eq!(company_name(0xFFFE), None);
+        // page 2 byte 1 bit 0 = Secure Connections (controller); page 1 absent -> no host names
+        let p0 = [0u8; 8];
+        let p2 = [0, 1, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            lmp_feature_names(&[p0, [0; 8], p2]),
+            ["Secure Connections (controller)"]
+        );
+        // names are unique so the table has no copy-paste duplicates
+        let mut n: Vec<_> = FEATURE_BITS.iter().map(|x| x.3).collect();
+        n.sort();
+        n.dedup();
+        assert_eq!(n.len(), FEATURE_BITS.len());
     }
 
     #[tokio::test]

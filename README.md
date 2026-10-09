@@ -13,6 +13,12 @@ Both also take `--sarif FILE`, `--baseline FILE` (a previous envelope) and `--fa
 (default `high`).
 
 - `analyze` also decodes SMP pairing (Pairing Request/Response, key size, Pairing Failed...) into `data.smp` and checks it (`smp_legacy_pairing`, `smp_just_works`, `smp_key_size`, `smp_pairing_failed`; see `ble-doctor rules explain <id>`).
+- `fingerprint --target <addr> [--json]` (not a findings command, no envelope) prints the LE+GATT profile. On Linux with
+  CAP_NET_RAW and a dual-mode target it also fills `sdp` and `lmp` (#64): LMP version -> Core version
+  (`version`), company id + `manufacturer_name`, `subversion`, and feature pages 0..2 (`pages` hex, named `features`,
+  Core Spec Vol 2 Part C 3.3), read with HCI Read Remote Supported/Extended Features and Read Remote Version
+  Information on hci0 over the ACL link the SDP query opens. Elsewhere it prints "SDP/LMP need a Linux host".
+  Unit-tested against byte fixtures and a mocked transport only; live validation is #70.
 - `findings` holds failed checks only; passed checks are under `data.passed`, and `analyze` puts the
   parsed capture under `data.capture`.
 - `category` is the rule's catalog category (`gatt`, `privacy`, `dfu`); `remedy` is the rule doc's
