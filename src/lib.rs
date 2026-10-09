@@ -19,6 +19,7 @@ pub mod recon;
 pub mod report;
 pub mod rules;
 pub mod sarif;
+pub mod smp;
 pub mod sniffer;
 pub mod testkit;
 pub mod tui;

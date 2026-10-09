@@ -2,13 +2,14 @@
 
 use crate::checks::{CheckResult, Severity};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A RPA rotates on a ~2-15 min timer; a capture shorter than this cannot call an address static.
 pub const MIN_ROTATION_OBSERVATION_SECONDS: f64 = 600.0;
 
 const LINKTYPE_BLUETOOTH_LE_LL: u32 = 251;
 const LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR: u32 = 256;
+const SMP_CID: u16 = 0x0006;
 const ADV_ACCESS_ADDRESS: u32 = 0x8E89_BED6;
 const BTSNOOP_DATALINK_H4: u32 = 1002;
 const BTSNOOP_DATALINK_LINUX_MONITOR: u32 = 2001;
@@ -22,6 +23,42 @@ pub struct CaptureInfo {
     pub adv_frame_timestamps: Vec<f64>,
     pub duration_seconds: Option<f64>,
     pub capture_flavour: Option<String>,
+    /// Reassembled SMP PDUs (L2CAP CID 0x0006 payloads: code + body), in capture order.
+    #[serde(skip)]
+    pub smp_pdus: Vec<Vec<u8>>,
+}
+
+/// L2CAP reassembly keyed by link (pcap: access address, btsnoop: ACL handle); keeps SMP payloads.
+/// ponytail: pcap LL PDUs carry no direction, so interleaved fragments of both directions on one
+/// link would corrupt each other; the usual strictly-alternating pairing flights are fine.
+#[derive(Default)]
+struct L2capAsm {
+    bufs: HashMap<u32, Vec<u8>>,
+    smp: Vec<Vec<u8>>,
+}
+
+impl L2capAsm {
+    fn feed(&mut self, link: u32, start: bool, data: &[u8]) {
+        if start {
+            self.bufs.insert(link, data.to_vec());
+        } else if let Some(b) = self.bufs.get_mut(&link) {
+            b.extend(data);
+        }
+        let Some(b) = self.bufs.get(&link) else {
+            return;
+        };
+        if b.len() < 4 {
+            return;
+        }
+        let want = 4 + u16::from_le_bytes([b[0], b[1]]) as usize;
+        if b.len() < want {
+            return;
+        }
+        if u16::from_le_bytes([b[2], b[3]]) == SMP_CID && want > 4 {
+            self.smp.push(b[4..want].to_vec());
+        }
+        self.bufs.remove(&link);
+    }
 }
 
 fn fmt_mac(le: &[u8]) -> String {
@@ -76,6 +113,7 @@ fn parse_pcap(d: &[u8]) -> Result<CaptureInfo, String> {
         capture_flavour: Some("pcap-le-ll".into()),
         ..Default::default()
     };
+    let mut asm = L2capAsm::default();
     let mut off = 24;
     while let (Some(sec), Some(frac), Some(len)) = (
         u32_at(d, off, be),
@@ -88,7 +126,20 @@ fn parse_pcap(d: &[u8]) -> Result<CaptureInfo, String> {
         off += 16 + len as usize;
         let ll = pkt.get(skip..).unwrap_or(&[]);
         // AA(4) hdr(2) AdvA(6); PDU types 0,1,2,4,6 carry AdvA first.
-        if ll.len() < 12 || u32::from_le_bytes(ll[0..4].try_into().unwrap()) != ADV_ACCESS_ADDRESS {
+        if ll.len() >= 6 {
+            let aa = u32::from_le_bytes(ll[0..4].try_into().unwrap());
+            if aa != ADV_ACCESS_ADDRESS {
+                // data channel PDU: LLID 2 = L2CAP start, 1 = continuation
+                let payload = ll[6..].get(..ll[5] as usize).unwrap_or(&[]);
+                match ll[4] & 3 {
+                    2 => asm.feed(aa, true, payload),
+                    1 => asm.feed(aa, false, payload),
+                    _ => {}
+                }
+                continue;
+            }
+        }
+        if ll.len() < 12 {
             continue;
         }
         if !matches!(ll[4] & 0x0F, 0 | 1 | 2 | 4 | 6) {
@@ -99,6 +150,7 @@ fn parse_pcap(d: &[u8]) -> Result<CaptureInfo, String> {
         info.adv_frame_timestamps
             .push(sec as f64 + frac as f64 / div);
     }
+    info.smp_pdus = asm.smp;
     Ok(finish(info))
 }
 
@@ -118,6 +170,7 @@ fn parse_btsnoop(d: &[u8]) -> Result<CaptureInfo, String> {
         ),
         ..Default::default()
     };
+    let mut asm = L2capAsm::default();
     let mut off = 16;
     while let (Some(incl), Some(flags), Some(ts_hi), Some(ts_lo)) = (
         u32_at(d, off + 4, true),
@@ -135,6 +188,20 @@ fn parse_btsnoop(d: &[u8]) -> Result<CaptureInfo, String> {
         } else {
             (pkt.first() == Some(&4)).then(|| &pkt[1..])
         };
+        // HCI ACL data: monitor opcodes 5/6 (TX/RX), H4 type 0x02.
+        let acl = if datalink == BTSNOOP_DATALINK_LINUX_MONITOR {
+            matches!(flags & 0xFFFF, 5 | 6).then_some(pkt)
+        } else {
+            (pkt.first() == Some(&2)).then(|| &pkt[1..])
+        };
+        if let Some([h0, h1, l0, l1, data @ ..]) = acl {
+            let hf = u16::from_le_bytes([*h0, *h1]);
+            let data = data
+                .get(..u16::from_le_bytes([*l0, *l1]) as usize)
+                .unwrap_or(&[]);
+            // PB flag: 0b00/0b10 = first fragment, 0b01 = continuation
+            asm.feed(u32::from(hf & 0x0FFF), (hf >> 12) & 3 != 1, data);
+        }
         let ts_us = ((u64::from(ts_hi) << 32) | u64::from(ts_lo)) as i64 - BTSNOOP_EPOCH_OFFSET;
         let ts = ts_us as f64 / 1e6;
         for mac in evt.map(le_adv_reports).unwrap_or_default() {
@@ -142,6 +209,7 @@ fn parse_btsnoop(d: &[u8]) -> Result<CaptureInfo, String> {
             info.adv_frame_timestamps.push(ts);
         }
     }
+    info.smp_pdus = asm.smp;
     Ok(finish(info))
 }
 
@@ -228,6 +296,8 @@ pub fn check_mac_rotation(info: &CaptureInfo) -> CheckResult {
     }
 }
 
+/// Table 2.8 (rows = initiator IO, columns = responder IO, order DisplayOnly, DisplayYesNo,
+/// KeyboardOnly, NoInputNoOutput, KeyboardDisplay). "numeric_comparison" is LE SC only.
 const TABLE_2_8: [[&str; 5]; 5] = [
     [
         "just_works",
@@ -238,14 +308,14 @@ const TABLE_2_8: [[&str; 5]; 5] = [
     ],
     [
         "just_works",
-        "just_works",
+        "numeric_comparison",
         "passkey_entry",
         "just_works",
-        "passkey_entry",
+        "numeric_comparison",
     ],
     [
-        "numeric_comparison",
-        "numeric_comparison",
+        "passkey_entry",
+        "passkey_entry",
         "passkey_entry",
         "just_works",
         "passkey_entry",
@@ -253,7 +323,7 @@ const TABLE_2_8: [[&str; 5]; 5] = [
     ["just_works"; 5],
     [
         "passkey_entry",
-        "passkey_entry",
+        "numeric_comparison",
         "passkey_entry",
         "just_works",
         "numeric_comparison",
@@ -283,7 +353,12 @@ pub fn classify_pairing_method(i: PairingSide, r: PairingSide) -> &'static str {
     }
     let m = TABLE_2_8[i.io as usize][r.io as usize];
     if m == "numeric_comparison" && !sc {
-        return "just_works";
+        // legacy: DisplayYesNo/DisplayYesNo has no passkey side -> Just Works, else Passkey Entry
+        return if i.io == 1 && r.io == 1 {
+            "just_works"
+        } else {
+            "passkey_entry"
+        };
     }
     m
 }
@@ -395,7 +470,19 @@ mod tests {
         );
         assert_eq!(
             classify_pairing_method(s(4, true, false), s(4, true, false)),
+            "passkey_entry"
+        );
+        assert_eq!(
+            classify_pairing_method(s(1, true, false), s(1, true, false)),
             "just_works"
+        );
+        assert_eq!(
+            classify_pairing_method(s(1, true, true), s(1, true, true)),
+            "numeric_comparison"
+        );
+        assert_eq!(
+            classify_pairing_method(s(2, true, true), s(0, true, true)),
+            "passkey_entry"
         );
         assert_eq!(
             classify_pairing_method(s(9, true, true), s(0, true, true)),
@@ -406,5 +493,69 @@ mod tests {
             ..s(0, false, false)
         };
         assert_eq!(classify_pairing_method(oob, oob), "oob");
+    }
+
+    /// L2CAP SMP frame (CID 6) around an SMP PDU.
+    fn smp_frame(pdu: &[u8]) -> Vec<u8> {
+        let mut f = (pdu.len() as u16).to_le_bytes().to_vec();
+        f.extend(6u16.to_le_bytes());
+        f.extend(pdu);
+        f
+    }
+
+    #[test]
+    fn btsnoop_h4_acl_smp_pairing_is_extracted() {
+        let mut out = b"btsnoop\0".to_vec();
+        out.extend(1u32.to_be_bytes());
+        out.extend(BTSNOOP_DATALINK_H4.to_be_bytes());
+        // Request (legacy Just Works, key 7) then Response, then a Public Key split in two ACLs.
+        let pk: Vec<u8> = std::iter::once(0x0C).chain(0..64).collect();
+        let f1 = smp_frame(&pk);
+        let acls = [
+            (0x0040u16, smp_frame(&[1, 3, 0, 1, 7, 1, 1])),
+            (0x0040, smp_frame(&[2, 3, 0, 1, 16, 1, 1])),
+            (0x0040, f1[..30].to_vec()),
+            (0x1040, f1[30..].to_vec()), // continuation
+        ];
+        for (hf, l2) in acls {
+            let mut pkt = vec![2];
+            pkt.extend(hf.to_le_bytes());
+            pkt.extend((l2.len() as u16).to_le_bytes());
+            pkt.extend(l2);
+            out.extend((pkt.len() as u32).to_be_bytes());
+            out.extend((pkt.len() as u32).to_be_bytes());
+            out.extend([0u8; 4]);
+            out.extend([0u8; 12]);
+            out.extend(pkt);
+        }
+        let info = parse_capture(&out).unwrap();
+        assert_eq!(info.smp_pdus.len(), 3);
+        assert_eq!(info.smp_pdus[0], [1, 3, 0, 1, 7, 1, 1]);
+        assert_eq!(info.smp_pdus[2], pk);
+        let r = crate::smp::analyze(&info.smp_pdus);
+        assert_eq!(r.checks.iter().filter(|c| !c.passed).count(), 3);
+    }
+
+    #[test]
+    fn pcap_ll_fragmented_smp_is_reassembled() {
+        let mut out = Vec::new();
+        out.extend(0xA1B2_C3D4u32.to_le_bytes());
+        out.extend([2, 0, 4, 0]);
+        out.extend([0u8; 8]);
+        out.extend(65535u32.to_le_bytes());
+        out.extend(LINKTYPE_BLUETOOTH_LE_LL.to_le_bytes());
+        let f = smp_frame(&[0x0C; 65]);
+        for (llid, chunk) in [(2u8, &f[..27]), (1, &f[27..54]), (1, &f[54..])] {
+            let mut p = 0x1234_5678u32.to_le_bytes().to_vec();
+            p.extend([llid, chunk.len() as u8]);
+            p.extend(chunk);
+            p.extend([0, 0, 0]);
+            out.extend([0u8; 8]);
+            out.extend((p.len() as u32).to_le_bytes());
+            out.extend((p.len() as u32).to_le_bytes());
+            out.extend(p);
+        }
+        let info = parse_capture(&out).unwrap();
+        assert_eq!(info.smp_pdus, [vec![0x0C; 65]]);
     }
 }

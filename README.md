@@ -12,6 +12,7 @@ Build tracked in the 27 repo issues. See `docs/` for design and the deferred-tes
 Both also take `--sarif FILE`, `--baseline FILE` (a previous envelope) and `--fail-on SEV`
 (default `high`).
 
+- `analyze` also decodes SMP pairing (Pairing Request/Response, key size, Pairing Failed...) into `data.smp` and checks it (`smp_legacy_pairing`, `smp_just_works`, `smp_key_size`, `smp_pairing_failed`; see `ble-doctor rules explain <id>`).
 - `findings` holds failed checks only; passed checks are under `data.passed`, and `analyze` puts the
   parsed capture under `data.capture`.
 - `category` is the rule's catalog category (`gatt`, `privacy`, `dfu`); `remedy` is the rule doc's

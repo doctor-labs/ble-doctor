@@ -151,3 +151,45 @@ fn baseline_gate_exits_3_and_bad_input_exits_2() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// Issue #65: a btsnoop with a legacy Just Works exchange -> data.smp plus smp_* findings.
+#[test]
+fn analyze_extracts_smp_pairing() {
+    let mut cap = b"btsnoop\0".to_vec();
+    cap.extend(1u32.to_be_bytes());
+    cap.extend(1002u32.to_be_bytes()); // H4
+    for smp in [[1u8, 3, 0, 1, 16, 1, 1], [2, 3, 0, 1, 16, 1, 1]] {
+        let mut pkt = vec![2, 0x40, 0x00, 11, 0, 7, 0, 6, 0];
+        pkt.extend(smp);
+        cap.extend((pkt.len() as u32).to_be_bytes());
+        cap.extend((pkt.len() as u32).to_be_bytes());
+        cap.extend([0u8; 16]);
+        cap.extend(pkt);
+    }
+    let dir = std::env::temp_dir().join(format!("bd-conf-smp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("s.btsnoop");
+    std::fs::write(&path, cap).unwrap();
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_ble-doctor"))
+            .arg("analyze")
+            .arg(&path)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let out = run(&["--json"]);
+    assert_eq!(out.status.code(), Some(1)); // legacy pairing is HIGH
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["data"]["smp"]["pairing"]["method"], "just_works");
+    let ids: Vec<_> = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"smp_legacy_pairing") && ids.contains(&"smp_just_works"));
+    assert!(!ids.contains(&"smp_key_size"));
+    let human = String::from_utf8(run(&[]).stdout).unwrap();
+    assert!(human.contains("smp: pairing method just_works, legacy pairing"));
+}

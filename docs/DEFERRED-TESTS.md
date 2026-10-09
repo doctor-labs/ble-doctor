@@ -18,7 +18,7 @@ Format: `[ ] #<issue> — <what> — <steps> — <hardware> — <expected>`
 - [ ] Bumble+vhci integration — BLOCKED on this Pi: `hci_vhci` is not built into kernel 6.18.50+rpt-rpi-2712 (no CONFIG_BT_HCIVHCI). Needs a kernel with the module, or a different Linux host.
 - [x] macOS CoreBluetooth manual smoke (cannot virtualize) — done 2026-10-07: `doctor` clean, `scan` discovered real advertisers (names + RSSI) via CoreBluetooth
 - [ ] Windows WinRT manual smoke (cannot virtualize) — needs a Windows host
-- [ ] #11 — SMP pairing extraction from a real capture — provide a btsnoop with an SMP pairing exchange — needs a capture — expected: classify_pairing_method returns the right method
+- [ ] #11/#65 — SMP pairing extraction from a real capture (offline decoder + synthetic-fixture tests done in #65; only a real btsnoop/pcap remains) — provide a btsnoop with an SMP pairing exchange — needs a capture — expected: classify_pairing_method returns the right method
 - [x] #5 — live scan — done 2026-10-07 on macOS (CoreBluetooth) AND the Pi/Linux (BlueZ): discovered the ESP32 `BLECTF_1CBE` (34:86:5D:FC:1C:BE) by advertised name.
 - [~] #4 — live doctor — macOS + Linux(Pi) DONE 2026-10-07 (clean ordered report, correct capability verdicts, no raw OS error); Windows still pending
 - [ ] #15 — live L2CAP ATT channel open on Linux — run on a Linux host with CAP_NET_RAW against a BLE peer — needs Linux + adapter — expected: channel opens, MTU response parsed
