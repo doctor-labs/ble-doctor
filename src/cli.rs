@@ -1050,8 +1050,11 @@ pub fn run(cli: Cli) {
         #[cfg(target_os = "linux")]
         {
             let res = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(crate::mitm::live::serve(target, *allow_dangerous))
+                tokio::runtime::Handle::current().block_on(crate::mitm::live::serve(
+                    cli.adapter.as_deref(),
+                    target,
+                    *allow_dangerous,
+                ))
             });
             if let Err(e) = res {
                 eprintln!("mitm: {e}");

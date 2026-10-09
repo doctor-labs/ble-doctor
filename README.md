@@ -37,6 +37,14 @@ Both also take `--sarif FILE`, `--baseline FILE` (a previous envelope) and `--fa
   `doctor` environment check keeps its own codes (0, or 1 on a hard failure); it emits no findings.
 - With `--json`, stdout carries only the envelope; the scan device list and baseline diff go to stderr.
 - Terminal output (scan, analyze, recon, fingerprint, read-values, probes, dfu, ctf) strips control, bidi and zero-width characters from device-supplied strings.
+- `mitm --target <addr> --allow-dangerous` (not a findings command, no envelope; Linux + 2 BLE
+  adapters + peripheral mode only, `--allow-dangerous` required) connects to `--target`, clones its
+  GATT onto a local peripheral via BlueZ/bluster, advertises it, and relays every victim
+  read/write to the real device, logging each exchange, until Ctrl-C. Forwarding the real device's
+  own notifications/indications into the victim's subscription is not implemented. Elsewhere, or
+  with one adapter, it prints a clean "not supported"/"needs a second adapter" error. GATT-tree
+  construction and the relay/event-handling are unit-tested against a mocked transport; live
+  validation on real radios is #68.
 - MCP (`ble-doctor mcp`): tools `scan` and `analyze` return the same envelope and accept
   `baseline`, `fail_on` and `sarif`. Not exposed over MCP: `--tui`, `--mtu`, `--as-address`,
   `--timeout`, `--adapter`, and every probe/write command.

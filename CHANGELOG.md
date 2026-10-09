@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `mitm` implements the Linux peripheral/clone half (#63): `serve()` connects to `--target`,
+  clones its enumerated GATT onto a BlueZ/bluster peripheral (one `Characteristic`/`Descriptor`
+  per enumerated one), advertises it, and relays every victim read/write to the real device via
+  the existing `MitmRelay`, logging each exchange, until Ctrl-C. Not implemented: forwarding the
+  real device's own notifications/indications into the victim's subscription (needs a
+  `GattClient::subscribe`, which does not exist yet). GATT-tree construction and the relay/event
+  loop are unit-tested against `testkit::FakeClient` (no D-Bus, no radio); live validation on two
+  real adapters is #68, tracked in `docs/DEFERRED-TESTS.md`.
 - `fingerprint` collects LMP data on Linux (#64): HCI Read Remote Supported Features, Extended Features (pages 1-2) and
   Read Remote Version Information over a raw HCI socket (hci0, ACL handle via HCIGETCONNINFO). New `lmp` fields:
   `version` (Bluetooth Core version), `manufacturer_name`, `pages`; `features` now names page 0..2 bits (Core Spec
