@@ -308,15 +308,21 @@ pub fn run(cli: Cli) {
             .and_then(|b| crate::capture::parse_capture(&b));
         match res {
             Ok(info) => {
-                let r = crate::capture::check_mac_rotation(&info);
+                let smp = crate::smp::analyze(&info.smp_pdus);
+                let mut checks = vec![crate::capture::check_mac_rotation(&info)];
+                checks.extend(smp.checks);
                 let loc = serde_json::json!({"kind": "file", "ref": capture.display().to_string()});
                 let human = format!(
-                    "capture: {} ({} adv frames)\n{}",
+                    "capture: {} ({} adv frames)\n{}{}",
                     crate::report::sanitize(info.capture_flavour.as_deref().unwrap_or("unknown")),
                     info.adv_mac_addresses.len(),
-                    crate::report::to_table(std::slice::from_ref(&r))
+                    crate::report::to_table(&checks),
+                    smp.summary
+                        .iter()
+                        .map(|l| format!("\n{}", crate::report::sanitize(l)))
+                        .collect::<String>()
                 );
-                let extra = serde_json::json!({"capture": info});
+                let extra = serde_json::json!({"capture": info, "smp": smp.data});
                 // Peripheral identity: the one address in the capture; rotating/absent -> empty.
                 let mut addrs: Vec<&String> = info.adv_mac_addresses.iter().collect();
                 addrs.sort();
@@ -327,7 +333,7 @@ pub fn run(cli: Cli) {
                     ""
                 };
                 let code = emit(
-                    &[r],
+                    &checks,
                     &loc,
                     dev,
                     extra,

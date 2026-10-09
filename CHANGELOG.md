@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `analyze` extracts the SMP pairing exchange (L2CAP CID 6) from pcap (LE LL) and btsnoop (H4 / Linux monitor) captures (#65).
+  Decoded PDUs and the derived pairing method go under `data.smp` (`{"seen": false}` when the capture has no SMP).
+  New rules: `smp_legacy_pairing` (high), `smp_just_works` (medium), `smp_key_size` (high at <=7 bytes, medium below 16),
+  `smp_pairing_failed` (info). Live-capture validation stays with #66/#69.
+
 ## 0.2.0
 
 Breaking: `scan --json` and `analyze --json` now emit the shared `doctor/1` envelope

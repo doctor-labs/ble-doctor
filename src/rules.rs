@@ -44,6 +44,30 @@ pub const RULES: &[Rule] = &[
         severities: &["info"],
         category: "dfu",
     },
+    Rule {
+        id: "smp_legacy_pairing",
+        title: "SMP legacy pairing (no LE Secure Connections)",
+        severities: &["high"],
+        category: "pairing",
+    },
+    Rule {
+        id: "smp_just_works",
+        title: "SMP Just Works association",
+        severities: &["medium"],
+        category: "pairing",
+    },
+    Rule {
+        id: "smp_key_size",
+        title: "SMP encryption key size below 16 bytes",
+        severities: &["high", "medium"],
+        category: "pairing",
+    },
+    Rule {
+        id: "smp_pairing_failed",
+        title: "SMP pairing failed",
+        severities: &["info"],
+        category: "pairing",
+    },
 ];
 
 const DOCS: &[(&str, &str)] = &[
@@ -63,6 +87,19 @@ const DOCS: &[(&str, &str)] = &[
     (
         "dfu_surface_absent",
         include_str!("rule_docs/dfu_surface_absent.md"),
+    ),
+    (
+        "smp_legacy_pairing",
+        include_str!("rule_docs/smp_legacy_pairing.md"),
+    ),
+    (
+        "smp_just_works",
+        include_str!("rule_docs/smp_just_works.md"),
+    ),
+    ("smp_key_size", include_str!("rule_docs/smp_key_size.md")),
+    (
+        "smp_pairing_failed",
+        include_str!("rule_docs/smp_pairing_failed.md"),
     ),
 ];
 
