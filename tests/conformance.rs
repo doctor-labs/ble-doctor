@@ -28,7 +28,14 @@ fn fixture() -> Vec<u8> {
 }
 
 fn run(args: &[&str]) -> (i32, String, Value) {
-    let dir = std::env::temp_dir().join(format!("bd-conf-{}", std::process::id()));
+    // Unique per test (libtest names the thread after it): tests run in parallel and share the pid,
+    // while repeated runs inside one test must see the same path (determinism check).
+    let t = std::thread::current();
+    let dir = std::env::temp_dir().join(format!(
+        "bd-conf-{}-{}",
+        std::process::id(),
+        t.name().unwrap_or("main")
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let cap = dir.join("c.pcap");
     std::fs::write(&cap, fixture()).unwrap();
