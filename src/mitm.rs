@@ -194,6 +194,8 @@ pub mod live {
     /// hardware. A service/characteristic/descriptor whose UUID bluster's
     /// `Uuid` (0.8) can't parse is dropped, mirroring `extract_gatt_fields`
     /// dropping empty UUIDs.
+    // bluster's API requires HashSet<Characteristic/Descriptor> (hash = uuid only).
+    #[allow(clippy::mutable_key_type)]
     fn clone_gatt_tree(
         target_services: &[GattService],
     ) -> (Vec<Service>, Vec<Uuid>, Vec<CharChannel>) {
