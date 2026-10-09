@@ -223,6 +223,8 @@ pub fn check_mac_rotation(info: &CaptureInfo) -> CheckResult {
         severity,
         passed,
         detail,
+        // every INFO non-pass above is a "cannot judge yet" verdict
+        inconclusive: severity == Severity::Info && !passed,
     }
 }
 

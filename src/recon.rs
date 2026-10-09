@@ -33,6 +33,29 @@ pub struct ReconInventory {
     pub services: Vec<ReconService>,
 }
 
+/// Human-readable inventory; every device-derived string goes through [`crate::report::sanitize`].
+pub fn render(inv: &ReconInventory) -> String {
+    use crate::report::sanitize as san;
+    let mut out = format!(
+        "target: {} ({})\n",
+        san(&inv.target),
+        san(inv.target_name.as_deref().unwrap_or("-"))
+    );
+    for s in &inv.services {
+        out.push_str(&format!("service {}\n", san(&s.uuid)));
+        for c in &s.characteristics {
+            out.push_str(&format!(
+                "  char {} [{}] writable={} subscribable={}\n",
+                san(&c.uuid),
+                san(&c.properties.join(",")),
+                c.writable,
+                c.subscribable
+            ));
+        }
+    }
+    out
+}
+
 pub fn inventory(gatt: &GattInfo) -> ReconInventory {
     let mut services: Vec<ReconService> = gatt
         .service_uuids
@@ -337,6 +360,21 @@ mod tests {
     use crate::testkit::{FakeCharacteristic as C, FakeGattTree};
 
     const SAMPLE: &str = "\x1b[1mBlueSploit v1.0.5.dev10 - Available Modules (4)\x1b[0m\n\n  Categories:\n    recon: 2\n    exploit: 2\n\n  recon/ble_target_enum        Enumerate target\n  recon/ble_scan_full          Full scan\n  exploit/dos/flood            (failed to load)\n  exploit/hid_inject           Inject keys\n";
+
+    #[test]
+    fn render_strips_escape_sequences_from_device_strings() {
+        let inv = ReconInventory {
+            target: "AA:BB\x1b]0;pwn\x07".into(),
+            target_name: Some("evil\x1b[2Jname\u{202e}".into()),
+            services: vec![ReconService {
+                uuid: "180f\x1b".into(),
+                characteristics: vec![],
+            }],
+        };
+        let out = render(&inv);
+        assert!(!out.contains('\x1b') && !out.contains('\x07') && !out.contains('\u{202e}'));
+        assert!(out.contains("evil[2Jname"));
+    }
 
     #[test]
     fn parses_sample_listing() {

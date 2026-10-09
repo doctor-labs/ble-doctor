@@ -11,7 +11,7 @@ use ratatui::{
 
 fn color(s: Severity) -> Color {
     match s {
-        Severity::High => Color::Red,
+        Severity::Critical | Severity::High => Color::Red,
         Severity::Medium => Color::Yellow,
         Severity::Low => Color::Cyan,
         Severity::Info => Color::Gray,
@@ -29,10 +29,10 @@ pub fn render_frame(frame: &mut Frame, score: u8, findings: &[CheckResult]) {
     );
     let rows = findings.iter().map(|f| {
         Row::new([
-            f.id.clone(),
+            crate::report::sanitize(&f.id),
             f.severity.as_str().to_string(),
             if f.passed { "PASS" } else { "FAIL" }.to_string(),
-            f.detail.clone(),
+            crate::report::sanitize(&f.detail),
         ])
         .style(Style::new().fg(color(f.severity)))
     });

@@ -10,7 +10,7 @@ const INFORMATION_URI: &str = "https://github.com/Vaibhav91one/ble-doctor";
 
 fn level(s: Severity) -> &'static str {
     match s {
-        Severity::High => "error",
+        Severity::Critical | Severity::High => "error",
         Severity::Medium => "warning",
         Severity::Low | Severity::Info => "note",
     }
@@ -18,6 +18,7 @@ fn level(s: Severity) -> &'static str {
 
 fn security_severity(s: Severity) -> &'static str {
     match s {
+        Severity::Critical => "9.5",
         Severity::High => "8.5",
         Severity::Medium => "5.5",
         Severity::Low => "3.0",
@@ -25,67 +26,28 @@ fn security_severity(s: Severity) -> &'static str {
     }
 }
 
-/// Replace the numbers that grow with capture length with `#`: a frame count
-/// (`3 frames`, `3 captured advertisement frames`) and a duration after `over `/`only ` (`900s`).
-/// Not every digit: a UUID or address differing in digits is a different finding.
-fn mask_volatile(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = String::new();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i].is_ascii_digit() && (i == 0 || !b[i - 1].is_ascii_digit()) {
-            let mut j = i;
-            while j < b.len() && b[j].is_ascii_digit() {
-                j += 1;
-            }
-            let rest = &s[j..];
-            let after_word = |w: &str| {
-                rest.starts_with(w)
-                    && !rest[w.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
-            };
-            let count = [
-                " captured advertisement frames",
-                " captured advertisement frame",
-                " frames",
-                " frame",
-            ]
-            .iter()
-            .any(|w| after_word(w));
-            let dur = after_word("s") && (s[..i].ends_with("over ") || s[..i].ends_with("only "));
-            if count || dur {
-                out.push('#');
-                i = j;
-                continue;
-            }
-            out.push_str(&s[i..j]);
-            i = j;
-            continue;
-        }
-        let ch = s[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-/// Stable id of one finding: sha256(`id\nseverity\ndetail`), volatile numbers masked, first 32 hex.
-pub fn fingerprint(r: &CheckResult) -> String {
-    let text = format!(
-        "{}\n{}\n{}",
-        r.id,
-        r.severity.as_str(),
-        mask_volatile(&r.detail)
-    );
+/// Stable id of one finding for baselines: first 16 hex of sha256(`rule id\ndevice`), the device
+/// identity trimmed and uppercased. Severity and detail wording are deliberately not part of it, so
+/// re-rating a rule or rewording a message never turns a baseline entry "new". One function serves
+/// JSON, SARIF and baseline. Device = the `--target` as passed (scan) or the single peripheral
+/// address in the capture, else empty (analyze); never a file path.
+pub fn fingerprint(r: &CheckResult, device: &str) -> String {
+    let text = format!("{}\n{}", r.id, device.trim().to_uppercase());
     let hex: String = Sha256::digest(text.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    hex[..32].to_string()
+    hex[..16].to_string()
 }
 
-/// One SARIF run. `score` is recorded in run properties. `location` is the artifact URI
+/// One SARIF run. `score` (the doctor/1 score object) is recorded in run properties. `location` is the artifact URI
 /// (a capture path); `None` = live scan (logical "BLE device" location).
-pub fn to_sarif(score: u8, results: &[CheckResult], location: Option<&str>) -> Value {
+pub fn to_sarif(
+    score: &Value,
+    results: &[CheckResult],
+    location: Option<&str>,
+    device: &str,
+) -> Value {
     let failed: Vec<&CheckResult> = results.iter().filter(|r| !r.passed).collect();
     let mut worst: BTreeMap<&str, Severity> = BTreeMap::new();
     for r in &failed {
@@ -118,7 +80,7 @@ pub fn to_sarif(score: u8, results: &[CheckResult], location: Option<&str>) -> V
                 "level": level(r.severity),
                 "message": {"text": r.detail},
                 "locations": [loc.clone()],
-                "partialFingerprints": {"bleDoctorFinding/v1": fingerprint(r)},
+                "partialFingerprints": {"doctorFinding/v1": fingerprint(r, device)},
                 "properties": {"severity": r.severity.as_str()},
             })
         })
@@ -151,7 +113,7 @@ mod tests {
             r("b", Severity::Info, true, "ok"),
             r("c", Severity::Medium, false, "mid"),
         ];
-        let v = to_sarif(40, &rs, None);
+        let v = to_sarif(&json!(40), &rs, None, "AA");
         assert_eq!(v["version"], "2.1.0");
         assert_eq!(v["$schema"], SARIF_SCHEMA);
         let run = &v["runs"][0];
@@ -173,11 +135,11 @@ mod tests {
             "device"
         );
         assert_eq!(
-            res[0]["partialFingerprints"]["bleDoctorFinding/v1"]
+            res[0]["partialFingerprints"]["doctorFinding/v1"]
                 .as_str()
                 .unwrap()
                 .len(),
-            32
+            16
         );
         assert_eq!(security_severity(Severity::Low), "3.0");
         assert_eq!(security_severity(Severity::Info), "0.0");
@@ -187,9 +149,10 @@ mod tests {
     #[test]
     fn capture_location_is_physical() {
         let v = to_sarif(
-            100,
+            &json!(100),
             &[r("a", Severity::Low, false, "x")],
             Some("my cap.pcap"),
+            "",
         );
         assert_eq!(
             v["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
@@ -199,57 +162,20 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_masks_volatile_only() {
-        let a = r(
-            "m",
-            Severity::Medium,
-            false,
-            "static across all 3 captured advertisement frames over 900s - trackable.",
+    fn fingerprint_is_rule_plus_device_only() {
+        let a = r("m", Severity::Medium, false, "static across 3 frames");
+        let b = r("m", Severity::High, false, "reworded, 40 frames");
+        assert_eq!(fingerprint(&a, "aa:bb"), fingerprint(&b, " AA:BB "));
+        assert_ne!(fingerprint(&a, "AA:BB"), fingerprint(&a, "AA:BC"));
+        assert_ne!(
+            fingerprint(&a, "AA:BB"),
+            fingerprint(&r("n", Severity::Medium, false, ""), "AA:BB")
         );
-        let b = r(
-            "m",
-            Severity::Medium,
-            false,
-            "static across all 40 captured advertisement frames over 1800s - trackable.",
-        );
-        assert_eq!(fingerprint(&a), fingerprint(&b));
-        let c = r(
-            "m",
-            Severity::Medium,
-            false,
-            "one address across 5 frames, spans only 30s.",
-        );
-        let d = r(
-            "m",
-            Severity::Medium,
-            false,
-            "one address across 9 frames, spans only 700s.",
-        );
-        assert_eq!(fingerprint(&c), fingerprint(&d));
-        // other digits are NOT masked; severity and id are part of the hash
-        let u1 = r(
-            "w",
-            Severity::High,
-            false,
-            "Writable without bonding: 0000aaa1",
-        );
-        let u2 = r(
-            "w",
-            Severity::High,
-            false,
-            "Writable without bonding: 0000aaa2",
-        );
-        assert_ne!(fingerprint(&u1), fingerprint(&u2));
-        let esc = r(
-            "w",
-            Severity::Low,
-            false,
-            "Writable without bonding: 0000aaa1",
-        );
-        assert_ne!(fingerprint(&u1), fingerprint(&esc));
-        assert_eq!(
-            mask_volatile("12 frames, 7 frameworks"),
-            "# frames, 7 frameworks"
+        let f = fingerprint(&a, "");
+        assert!(
+            f.len() == 16
+                && f.bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
     }
 }

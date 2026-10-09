@@ -79,6 +79,18 @@ pub fn rule_text(id: &str) -> Option<&'static str> {
     DOCS.iter().find(|(i, _)| *i == id).map(|(_, t)| *t)
 }
 
+/// The "How to fix" section of the rule doc as one line (doctor/1 `remedy`); None without a doc.
+pub fn remedy(id: &str) -> Option<String> {
+    let body = rule_text(id)?.split("## How to fix").nth(1)?;
+    let text = body
+        .split("\n## ")
+        .next()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
 /// Closest rule ids to `id` (shared-prefix / edit-distance based), best first.
 pub fn near_misses(id: &str) -> Vec<&'static str> {
     let mut v: Vec<(usize, &str)> = RULES
@@ -153,6 +165,13 @@ mod tests {
                 assert!(doc.contains(h), "{} missing {h}", r.id);
             }
         }
+    }
+
+    #[test]
+    fn remedy_is_how_to_fix_one_line() {
+        let r = remedy("mac_rotation").unwrap();
+        assert!(r.starts_with("If the advertising address is static") && !r.contains('\n'));
+        assert!(remedy("nope").is_none());
     }
 
     #[test]

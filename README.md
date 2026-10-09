@@ -4,3 +4,32 @@ BLE security auditor & scorer — a single cross-platform Rust CLI (superset of 
 Defensive / CTF / own-gear use only. Rust rewrite of ble-doctor v1.
 
 Build tracked in the 27 repo issues. See `docs/` for design and the deferred-test checklist.
+
+## Machine output
+
+`scan --json` and `analyze --json` print one `doctor/1` envelope (`schema`, `tool`, `version`,
+`exit_code`, `score`, `findings`, `data`); see [`docs/doctor-contract.md`](docs/doctor-contract.md).
+Both also take `--sarif FILE`, `--baseline FILE` (a previous envelope) and `--fail-on SEV`
+(default `high`).
+
+- `findings` holds failed checks only; passed checks are under `data.passed`, and `analyze` puts the
+  parsed capture under `data.capture`.
+- `category` is the rule's catalog category (`gatt`, `privacy`, `dfu`); `remedy` is the rule doc's
+  "How to fix" text; `location` is `{"kind":"device","ref":<target>}` for `scan` and
+  `{"kind":"file","ref":<capture path>}` for `analyze`.
+- `fingerprint` = first 16 hex of sha256(`rule id`, newline, device identity), the same value as the
+  SARIF `partialFingerprints["doctorFinding/v1"]`. Device identity is the `--target` as passed
+  (trimmed, uppercased) for `scan`, and for `analyze` the single advertising address in the capture
+  (empty when it rotates). Severity, message wording and the capture path are not part of it, so
+  baselines survive re-rating and match across captures of one device.
+- Score `ble/1`: `100 * prod(1 - w/100)` over failed checks (critical 50, high 30, medium 15, low 5,
+  info 0), half-up rounded. `coverage_gaps` counts checks flagged `inconclusive` (capture too short to judge
+  MAC rotation, GATT not fully enumerated, signing status unknown); with a gap, a score of 90+ is labelled `incomplete`.
+- Exit codes: 0 clean, 1 a finding at or above `--fail-on`, 2 error (usage, bad input, radio or
+  I/O failure), 3 `--baseline` and a NEW finding at or above `--fail-on`, 130 SIGINT. The
+  `doctor` environment check keeps its own codes (0, or 1 on a hard failure); it emits no findings.
+- With `--json`, stdout carries only the envelope; the scan device list and baseline diff go to stderr.
+- Terminal output (scan, analyze, recon, fingerprint, read-values, probes, dfu, ctf) strips control, bidi and zero-width characters from device-supplied strings.
+- MCP (`ble-doctor mcp`): tools `scan` and `analyze` return the same envelope and accept
+  `baseline`, `fail_on` and `sarif`. Not exposed over MCP: `--tui`, `--mtu`, `--as-address`,
+  `--timeout`, `--adapter`, and every probe/write command.

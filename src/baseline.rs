@@ -1,26 +1,26 @@
 //! Baseline diffing: which failures are NEW versus a saved known-good report (v1 `baseline.py`).
 
 use crate::checks::{CheckResult, Severity};
-use crate::report::compute_score;
+use crate::report::{compute_score, sanitize};
 use crate::sarif::fingerprint;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// Process exit code when new failures reach the severity gate.
+/// Process exit code when NEW failures reach `--fail-on` under `--baseline`.
 pub const EXIT_GATE_FAILED: i32 = 3;
 
 /// Drift between a scan and its baseline.
 #[derive(Debug, Serialize)]
 pub struct BaselineDiff<'a> {
     pub new_failures: Vec<&'a CheckResult>,
-    /// Baseline failures no longer failing in the current scan.
-    pub resolved: Vec<CheckResult>,
+    /// Baseline findings no longer failing in the current scan.
+    pub resolved: Vec<&'a Value>,
     /// current score - baseline score.
     pub score_delta: i32,
 }
 
-/// Read and validate a saved `--json` report. Missing/unreadable/malformed is an error, never a pass.
+/// Read and validate a saved `--json` envelope (doctor/1). Missing/unreadable/malformed is an error, never a pass.
 pub fn load(path: &std::path::Path) -> Result<Value, String> {
     let v: Value = std::fs::read_to_string(path)
         .map_err(|e| format!("baseline {}: {e}", path.display()))
@@ -28,8 +28,11 @@ pub fn load(path: &std::path::Path) -> Result<Value, String> {
             serde_json::from_str(&t)
                 .map_err(|e| format!("baseline {}: bad JSON: {e}", path.display()))
         })?;
-    if !v["findings"].is_array() {
-        return Err(format!("baseline {}: no findings array", path.display()));
+    if v["schema"] != "doctor/1" || !v["findings"].is_array() {
+        return Err(format!(
+            "baseline {}: not a doctor/1 envelope (re-create it with `--json`)",
+            path.display()
+        ));
     }
     Ok(v)
 }
@@ -40,82 +43,77 @@ pub fn parse_severity(s: &str) -> Option<Severity> {
         Severity::Low,
         Severity::Medium,
         Severity::High,
+        Severity::Critical,
     ]
     .into_iter()
     .find(|v| v.as_str() == s)
 }
 
-/// FAILED findings of a report dict (malformed entries are skipped).
-fn failed_findings(report: &Value) -> Vec<CheckResult> {
+/// Fingerprints of the findings in a doctor/1 envelope (every finding there is a failure).
+pub fn failed_fingerprints(report: &Value) -> HashSet<String> {
     report["findings"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|f| !f["passed"].as_bool().unwrap_or(false))
-        .filter_map(|f| {
-            Some(CheckResult::new(
-                f["id"].as_str()?,
-                parse_severity(f["severity"].as_str()?)?,
-                false,
-                f["detail"].as_str().unwrap_or(""),
-            ))
-        })
+        .filter_map(|f| f["fingerprint"].as_str().map(str::to_string))
         .collect()
 }
 
-/// Fingerprints of the FAILED findings in a report dict.
-pub fn failed_fingerprints(report: &Value) -> HashSet<String> {
-    failed_findings(report).iter().map(fingerprint).collect()
-}
-
-/// Failed checks whose fingerprint is not a failure in the baseline.
-pub fn new_failures<'a>(current: &'a [CheckResult], baseline: &Value) -> Vec<&'a CheckResult> {
+/// Failed checks whose fingerprint is not a finding in the baseline.
+pub fn new_failures<'a>(
+    current: &'a [CheckResult],
+    baseline: &Value,
+    device: &str,
+) -> Vec<&'a CheckResult> {
     let known = failed_fingerprints(baseline);
     current
         .iter()
-        .filter(|r| !r.passed && !known.contains(&fingerprint(r)))
+        .filter(|r| !r.passed && !known.contains(&fingerprint(r, device)))
         .collect()
 }
 
-pub fn diff<'a>(current: &'a [CheckResult], baseline: &Value) -> BaselineDiff<'a> {
+pub fn diff<'a>(current: &'a [CheckResult], baseline: &'a Value, device: &str) -> BaselineDiff<'a> {
     let now: HashSet<String> = current
         .iter()
         .filter(|r| !r.passed)
-        .map(fingerprint)
+        .map(|r| fingerprint(r, device))
         .collect();
-    let resolved = failed_findings(baseline)
+    let resolved = baseline["findings"]
+        .as_array()
         .into_iter()
-        .filter(|r| !now.contains(&fingerprint(r)))
+        .flatten()
+        .filter(|f| f["fingerprint"].as_str().is_some_and(|x| !now.contains(x)))
         .collect();
-    let base_score = baseline["score"].as_i64().unwrap_or(100) as i32;
+    let base_score = baseline["score"]["value"].as_i64().unwrap_or(100) as i32;
     BaselineDiff {
-        new_failures: new_failures(current, baseline),
+        new_failures: new_failures(current, baseline, device),
         resolved,
         score_delta: i32::from(compute_score(current)) - base_score,
     }
 }
 
-/// Severity gate: `severity` is at or above `threshold`.
-pub fn reaches(severity: Severity, threshold: Severity) -> bool {
-    severity >= threshold
-}
-
-/// Print the diff to stderr (stdout stays clean for `--json`); true when the gate trips.
-pub fn report_and_gate(checks: &[CheckResult], baseline: &Value, threshold: Severity) -> bool {
-    let d = diff(checks, baseline);
+/// Print the diff to stderr (stdout stays clean for `--json`).
+pub fn report_diff(d: &BaselineDiff) {
     eprintln!("baseline: score delta {:+}", d.score_delta);
     for r in &d.new_failures {
-        eprintln!("  NEW      {:?} {}: {}", r.severity, r.id, r.detail);
+        eprintln!(
+            "  NEW      {:?} {}: {}",
+            r.severity,
+            sanitize(&r.id),
+            sanitize(&r.detail)
+        );
     }
-    for r in &d.resolved {
-        eprintln!("  RESOLVED {:?} {}: {}", r.severity, r.id, r.detail);
+    for f in &d.resolved {
+        eprintln!(
+            "  RESOLVED {} {}: {}",
+            sanitize(f["severity"].as_str().unwrap_or("?")),
+            sanitize(f["id"].as_str().unwrap_or("?")),
+            sanitize(f["message"].as_str().unwrap_or(""))
+        );
     }
     if d.new_failures.is_empty() && d.resolved.is_empty() {
         eprintln!("  no change");
     }
-    d.new_failures
-        .iter()
-        .any(|r| reaches(r.severity, threshold))
 }
 
 #[cfg(test)]
@@ -123,17 +121,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn fp(id: &str) -> String {
+        fingerprint(&CheckResult::new(id, Severity::Low, false, ""), "DEV")
+    }
+
     fn base() -> Value {
-        json!({"score": 85, "findings": [
-            {"id":"mac_rotation","severity":"medium","passed":false,"detail":"static MAC"},
-            {"id":"old_issue","severity":"low","passed":false,"detail":"gone soon"},
-            {"id":"ok","severity":"high","passed":true,"detail":"fine"}]})
+        json!({"schema": "doctor/1", "score": {"value": 85}, "findings": [
+            {"id":"mac_rotation","severity":"medium","message":"static MAC",
+             "fingerprint": fp("mac_rotation")},
+            {"id":"old_issue","severity":"low","message":"gone soon",
+             "fingerprint": fp("old_issue")}]})
     }
 
     #[test]
-    fn new_high_failure_trips_gate() {
+    fn new_failure_found_shared_and_passing_ignored() {
         let cur = [
             CheckResult::new("mac_rotation", Severity::Medium, false, "static MAC"),
+            CheckResult::new("ok", Severity::High, true, "fine"),
             CheckResult::new(
                 "unauthenticated_writes",
                 Severity::High,
@@ -141,43 +145,31 @@ mod tests {
                 "Writable: a",
             ),
         ];
-        let d = diff(&cur, &base());
+        let b = base();
+        let d = diff(&cur, &b, "DEV");
         assert_eq!(d.new_failures.len(), 1);
         assert_eq!(d.new_failures[0].id, "unauthenticated_writes");
-        assert!(report_and_gate(&cur, &base(), Severity::High));
-        assert!(!report_and_gate(&cur[..1], &base(), Severity::High));
+        assert_eq!(d.resolved.len(), 1);
+        assert_eq!(d.resolved[0]["id"], "old_issue");
+        assert_eq!(d.score_delta, 100 * 7 / 10 * 85 / 100 - 85);
     }
 
     #[test]
-    fn shared_failure_not_new_and_passing_ignored() {
+    fn envelope_marks_baseline_state() {
         let cur = [
             CheckResult::new("mac_rotation", Severity::Medium, false, "static MAC"),
-            CheckResult::new("ok", Severity::High, true, "fine"),
+            CheckResult::new("w", Severity::High, false, "new one"),
         ];
-        assert!(new_failures(&cur, &base()).is_empty());
-    }
-
-    #[test]
-    fn resolved_and_score_delta() {
-        let cur = [CheckResult::new(
-            "mac_rotation",
-            Severity::Medium,
-            false,
-            "static MAC",
-        )];
-        let d = diff(&cur, &base());
-        assert_eq!(d.resolved.len(), 1);
-        assert_eq!(d.resolved[0].id, "old_issue");
-        assert_eq!(d.score_delta, 85 - 85); // 100 * 0.85 = 85
-        let clean = [CheckResult::new("mac_rotation", Severity::Medium, true, "")];
-        assert_eq!(diff(&clean, &base()).score_delta, 15);
-        assert_eq!(diff(&clean, &base()).resolved.len(), 2);
-    }
-
-    #[test]
-    fn reaches_orders_severities() {
-        assert!(reaches(Severity::High, Severity::Medium));
-        assert!(!reaches(Severity::Low, Severity::Medium));
+        let loc = json!({"kind": "device", "ref": "A"});
+        let v = crate::report::to_envelope(&cur, &loc, "DEV", Some(&base()), 3, json!({}));
+        assert_eq!(v["baseline"], json!({"new": 1, "unchanged": 1, "fixed": 1}));
+        let states: Vec<_> = v["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["baseline_state"].as_str().unwrap())
+            .collect();
+        assert_eq!(states, ["new", "unchanged"]); // sorted high first
     }
 
     #[test]
@@ -189,7 +181,7 @@ mod tests {
             .contains("nope.json"));
         let p = dir.join("bad.json");
         std::fs::write(&p, "{}").unwrap();
-        assert!(load(&p).unwrap_err().contains("no findings"));
+        assert!(load(&p).unwrap_err().contains("doctor/1"));
         std::fs::write(&p, base().to_string()).unwrap();
         assert!(load(&p).is_ok());
     }

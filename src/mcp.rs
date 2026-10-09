@@ -20,49 +20,70 @@ fn sanitize<'a>(name: &str, v: &'a str) -> Result<&'a str, String> {
 }
 
 /// Build the CLI argv for a whitelisted tool; the only place subcommands are chosen.
+/// `baseline`, `fail_on` and `sarif` pass straight through to the CLI flags of the same name.
+/// Excluded over MCP: `--tui`, `--mtu`, `--as-address`, `--timeout`, `--adapter` (interactive or raw-radio).
 pub fn argv_for(tool: &str, args: &Value) -> Result<Vec<String>, String> {
     let get = |k: &str| args.get(k).and_then(Value::as_str);
-    match tool {
+    let mut a = match tool {
         "scan" => {
             let mut a = vec!["scan".to_string(), "--json".to_string()];
             if let Some(t) = get("target").filter(|t| !t.is_empty()) {
                 a.push("--target".into());
                 a.push(sanitize("target", t)?.to_string());
             }
-            Ok(a)
+            a
         }
         "analyze" => {
             let f = get("capture_file").ok_or("capture_file is required")?;
-            Ok(vec![
+            vec![
                 "analyze".into(),
                 sanitize("capture_file", f)?.to_string(),
                 "--json".into(),
-            ])
+            ]
         }
-        other => Err(format!("unknown tool: {other}")),
+        other => return Err(format!("unknown tool: {other}")),
+    };
+    for k in ["baseline", "fail_on", "sarif"] {
+        if let Some(v) = get(k).filter(|v| !v.is_empty()) {
+            a.push(format!("--{}", k.replace('_', "-")));
+            a.push(sanitize(k, v)?.to_string());
+        }
     }
+    Ok(a)
 }
 
 fn tool_list() -> Value {
+    let flags = json!({
+        "baseline": {"type": "string", "description": "Saved doctor/1 --json envelope to diff against"},
+        "fail_on": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+        "sarif": {"type": "string", "description": "Write SARIF 2.1.0 to this file"}
+    });
+    let with = |mut p: Value| {
+        p.as_object_mut()
+            .unwrap()
+            .extend(flags.as_object().unwrap().clone());
+        p
+    };
     json!([
         {"name": "scan",
-         "description": "Score a live BLE device by passive GATT enumeration (same JSON as `ble-doctor scan --json`).",
-         "inputSchema": {"type": "object", "properties": {"target": {"type": "string"}}}},
+         "description": "Score a live BLE device by passive GATT enumeration (same doctor/1 JSON as `ble-doctor scan --json`).",
+         "inputSchema": {"type": "object", "properties": with(json!({"target": {"type": "string"}}))}},
         {"name": "analyze",
-         "description": "Score a BLE capture file (same JSON as `ble-doctor analyze --json`).",
-         "inputSchema": {"type": "object", "properties": {"capture_file": {"type": "string"}},
+         "description": "Score a BLE capture file (same doctor/1 JSON as `ble-doctor analyze --json`).",
+         "inputSchema": {"type": "object", "properties": with(json!({"capture_file": {"type": "string"}})),
                          "required": ["capture_file"]}}
     ])
 }
 
-/// Run this binary with `argv`; Ok(stdout) on exit 0, Err(message) otherwise.
+/// Run this binary with `argv`; Ok(stdout) on exit 0/1/3, Err(message) otherwise.
 fn run_cli(argv: &[String]) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let out = std::process::Command::new(exe)
         .args(argv)
         .output()
         .map_err(|e| e.to_string())?;
-    if out.status.success() {
+    // Exit 1 (findings) and 3 (new vs baseline) still print the envelope; only 2/signals are errors.
+    if matches!(out.status.code(), Some(0 | 1 | 3)) && !out.stdout.is_empty() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -194,6 +215,15 @@ mod tests {
             argv_for("analyze", &json!({"capture_file": "c.cap"})).unwrap(),
             ["analyze", "c.cap", "--json"]
         );
+    }
+
+    #[test]
+    fn contract_flags_pass_through() {
+        assert_eq!(
+            argv_for("analyze", &json!({"capture_file": "c", "baseline": "b.json", "fail_on": "low", "sarif": "o.sarif"})).unwrap(),
+            ["analyze", "c", "--json", "--baseline", "b.json", "--fail-on", "low", "--sarif", "o.sarif"]
+        );
+        assert!(argv_for("scan", &json!({"baseline": "-x"})).is_err());
     }
 
     #[test]

@@ -1,0 +1,18 @@
+# Changelog
+
+## 0.2.0
+
+Breaking: `scan --json` and `analyze --json` now emit the shared `doctor/1` envelope
+(`docs/doctor-contract.md`). Refs Vaibhav91one/android-doctor#161.
+
+- JSON: `{score, findings}` becomes `{schema, tool, version, exit_code, score{value,label,model,coverage_gaps}, findings, data}`.
+  `findings` lists failed checks only, with `fingerprint`, `category`, `message` (was `detail`),
+  `location`, `remedy`; passed checks moved to `data.passed`. `analyze` puts the capture under `data.capture`.
+- Exit codes: every error is now 2 (was 1); `--fail-on` (default `high`, now also `critical`) gates
+  `scan`/`analyze` with exit 1; `--baseline` gates new findings with 3. `scan` and `analyze` both take
+  `--sarif`, `--baseline`, `--fail-on`.
+- Fingerprints are 16 hex (was 32) and hash rule id + device identity only (no severity or detail); SARIF key is `doctorFinding/v1` (was `bleDoctorFinding/v1`).
+- Baselines must be a `doctor/1` envelope; match is by fingerprint. Old reports are rejected.
+- `scan --json`: the device list now goes to stderr so stdout is a single JSON document.
+- Human output (table, TUI, stderr diff, scan, recon, fingerprint, read-values, probes) strips control/bidi/zero-width characters.
+- MCP `scan`/`analyze` accept `baseline`, `fail_on`, `sarif` and return the envelope on exit 1/3.

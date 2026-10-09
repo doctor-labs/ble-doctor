@@ -23,8 +23,9 @@ attribution) live in AGENTS.md — read it before changing anything:
 - `gatt.rs` — enumeration → `GattInfo`; CCCD / descriptor logic (macOS = "unknown") — #6
 - `checks.rs`, `rules.rs` — pure checks (`CheckResult{id,severity,passed,detail}`) + rule catalog
   (`rule_docs/<id>.md`, 4 headings) — #7 / #23
-- `report.rs`, `sarif.rs` — product-of-survival score (`SEVERITY_WEIGHT` HIGH30/MED15/LOW5/INFO0)
-  + JSON/table + SARIF 2.1.0 (fingerprinted, volatile fields masked) — #7
+- `report.rs`, `sarif.rs` — product-of-survival score (`SEVERITY_WEIGHT` CRIT50/HIGH30/MED15/LOW5/INFO0)
+  + doctor/1 envelope (`docs/doctor-contract.md`) / table / the one `sanitize()` for human output
+  + SARIF 2.1.0 (16-hex fingerprint = rule id + device identity) — #7
 - `probe/write.rs` `read.rs` `dfu.rs` — opt-in probes, firmware denylist, `--allow-dangerous` — #8/#9/#10
 - `capture.rs` — native btsnoop/pcap parse + MAC-rotation (`MIN_ROTATION_OBSERVATION_SECONDS=600`) — #11
 - `recon.rs` `ctf.rs` `baseline.rs` `handoff.rs` — v1-parity extras — #21/#22/#26/#27
@@ -41,8 +42,9 @@ attribution) live in AGENTS.md — read it before changing anything:
 
 ## Scoring (carry from v1)
 
-`score = 100·Π(1 − weight/100)` over FAILED checks only (`HIGH 30, MED 15, LOW 5, INFO 0`), half-up
+`score = 100·Π(1 − weight/100)` over FAILED checks only (`CRIT 50, HIGH 30, MED 15, LOW 5, INFO 0`; model `ble/1`), half-up
 rounded, clamped [0,100]. INFO and passed checks never move the score. One HIGH caps the score at 70.
+Exit codes: 0 / 1 finding ≥ `--fail-on` (default high) / 2 error (`cli::fail()`) / 3 new vs `--baseline`.
 
 ## Status
 
