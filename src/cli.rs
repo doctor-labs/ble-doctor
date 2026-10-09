@@ -1,5 +1,6 @@
 //! Command-line interface (clap). All handlers are stubs for now.
 
+use crate::report::sanitize as san;
 use clap::{Parser, Subcommand};
 
 /// BLE diagnostics and security CLI.
@@ -316,9 +317,19 @@ pub fn run(cli: Cli) {
                     crate::report::to_table(std::slice::from_ref(&r))
                 );
                 let extra = serde_json::json!({"capture": info});
+                // Peripheral identity: the one address in the capture; rotating/absent -> empty.
+                let mut addrs: Vec<&String> = info.adv_mac_addresses.iter().collect();
+                addrs.sort();
+                addrs.dedup();
+                let dev = if addrs.len() == 1 {
+                    addrs[0].as_str()
+                } else {
+                    ""
+                };
                 let code = emit(
                     &[r],
                     &loc,
+                    dev,
                     extra,
                     *json,
                     sarif,
@@ -360,7 +371,12 @@ pub fn run(cli: Cli) {
                 } else {
                     println!("sniffer: {} adv frames", info.adv_mac_addresses.len());
                     let tag = if r.passed { "PASS" } else { "FAIL" };
-                    println!("[{tag}] {:?} {}: {}", r.severity, r.id, r.detail);
+                    println!(
+                        "[{tag}] {:?} {}: {}",
+                        r.severity,
+                        san(&r.id),
+                        san(&r.detail)
+                    );
                 }
             }
             Err(e) => {
@@ -474,6 +490,7 @@ pub fn run(cli: Cli) {
                                         let code = emit(
                                             &checks,
                                             &loc,
+                                            t,
                                             serde_json::json!({}),
                                             true,
                                             sarif,
@@ -495,6 +512,7 @@ pub fn run(cli: Cli) {
                                         let code = emit(
                                             &checks,
                                             &loc,
+                                            t,
                                             serde_json::json!({}),
                                             false,
                                             sarif,
@@ -516,16 +534,19 @@ pub fn run(cli: Cli) {
                                     for w in &g.writable_chars {
                                         println!(
                                             "  write {} requires_bonding={} ({})",
-                                            w.uuid, w.requires_bonding, w.bonding_basis
+                                            san(&w.uuid),
+                                            w.requires_bonding,
+                                            san(&w.bonding_basis)
                                         );
                                     }
                                     for s in &g.subscribe_chars {
-                                        println!("  notify {} cccd={:?}", s.uuid, s.cccd);
+                                        println!("  notify {} cccd={:?}", san(&s.uuid), s.cccd);
                                     }
                                     let human = format!("\n{}", crate::report::to_table(&checks));
                                     let code = emit(
                                         &checks,
                                         &loc,
+                                        t,
                                         serde_json::json!({}),
                                         false,
                                         sarif,
@@ -595,23 +616,7 @@ pub fn run(cli: Cli) {
             let v = serde_json::json!({"inventory": inv, "bluesploit_crosscheck": bs});
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
         } else {
-            println!(
-                "target: {} ({})",
-                inv.target,
-                inv.target_name.as_deref().unwrap_or("-")
-            );
-            for s in &inv.services {
-                println!("service {}", s.uuid);
-                for c in &s.characteristics {
-                    println!(
-                        "  char {} [{}] writable={} subscribable={}",
-                        c.uuid,
-                        c.properties.join(","),
-                        c.writable,
-                        c.subscribable
-                    );
-                }
-            }
+            print!("{}", crate::recon::render(&inv));
             if let Some(b) = bs {
                 println!(
                     "\nbluesploit cross-check (EXTERNAL, HEURISTIC scrape, INFO only, not scored):"
@@ -677,13 +682,18 @@ pub fn run(cli: Cli) {
                     for r in &results {
                         println!(
                             "  {} ({}) -> {:?} requires_bonding={:?}",
-                            r.uuid, r.service_uuid, r.outcome, r.requires_bonding
+                            san(&r.uuid),
+                            san(&r.service_uuid),
+                            r.outcome,
+                            r.requires_bonding
                         );
                     }
                     let tag = if finding.passed { "PASS" } else { "FAIL" };
                     println!(
                         "[{tag}] {:?} {}: {}",
-                        finding.severity, finding.id, finding.detail
+                        finding.severity,
+                        san(&finding.id),
+                        san(&finding.detail)
                     );
                 }
             }
@@ -735,7 +745,11 @@ pub fn run(cli: Cli) {
         match res {
             Ok(f) if *json => println!("{}", serde_json::to_string_pretty(&f).expect("serialize")),
             Ok(f) => {
-                println!("{} name={}", f.address, f.name.as_deref().unwrap_or("-"));
+                println!(
+                    "{} name={}",
+                    san(&f.address),
+                    san(f.name.as_deref().unwrap_or("-"))
+                );
                 println!(
                     "services={} chars={} writable={} notify={} pairing={}",
                     f.service_uuids.len(),
@@ -745,17 +759,17 @@ pub fn run(cli: Cli) {
                     f.pairing_method
                 );
                 for u in &f.service_uuids {
-                    println!("  service {u}");
+                    println!("  service {}", san(u));
                 }
                 for n in &f.notable_chars {
-                    println!("  {n}");
+                    println!("  {}", san(n));
                 }
                 if let Some(s) = &f.sdp {
                     for r in &s.records {
                         println!(
                             "  sdp {:?} {}",
                             r.service_classes,
-                            r.name.as_deref().unwrap_or("")
+                            san(r.name.as_deref().unwrap_or(""))
                         );
                     }
                 }
@@ -766,7 +780,7 @@ pub fn run(cli: Cli) {
                     );
                 }
                 for n in &f.notes {
-                    println!("  note: {n}");
+                    println!("  note: {}", san(n));
                 }
             }
             Err(e) => {
@@ -804,10 +818,17 @@ pub fn run(cli: Cli) {
                 for r in &results {
                     match &r.outcome {
                         Value { len, preview } => {
-                            println!("  {} ({}) len={len} \"{preview}\"", r.uuid, r.service_uuid)
+                            println!(
+                                "  {} ({}) len={len} \"{}\"",
+                                san(&r.uuid),
+                                san(&r.service_uuid),
+                                san(preview)
+                            )
                         }
-                        Skipped(why) => println!("  {} skipped: {why}", r.uuid),
-                        Error(e) => println!("  {} read error: {e}", r.uuid),
+                        Skipped(why) => println!("  {} skipped: {}", san(&r.uuid), san(why)),
+                        Error(e) => {
+                            println!("  {} read error: {}", san(&r.uuid), san(&e.to_string()))
+                        }
                     }
                 }
             }
@@ -873,11 +894,18 @@ pub fn run(cli: Cli) {
                 } else {
                     println!(
                         "buttonless {} -> {:?} triggerable_unbonded={}",
-                        buttonless.uuid, buttonless.outcome, buttonless.triggerable_unbonded
+                        san(&buttonless.uuid),
+                        buttonless.outcome,
+                        buttonless.triggerable_unbonded
                     );
                     for r in [&entry_point, &surface_absent] {
                         let tag = if r.passed { "PASS" } else { "FAIL" };
-                        println!("[{tag}] {:?} {}: {}", r.severity, r.id, r.detail);
+                        println!(
+                            "[{tag}] {:?} {}: {}",
+                            r.severity,
+                            san(&r.id),
+                            san(&r.detail)
+                        );
                     }
                 }
             }
@@ -920,7 +948,7 @@ pub fn run(cli: Cli) {
                     Ok(Some((byte, value))) => println!(
                         "found byte 0x{byte:02x} -> {:?} ({})",
                         value,
-                        String::from_utf8_lossy(&value)
+                        san(&String::from_utf8_lossy(&value))
                     ),
                     Ok(None) => {
                         println!("brute: exhausted 0x00..=0xff without a match");
@@ -951,7 +979,7 @@ pub fn run(cli: Cli) {
                 match res {
                     Ok(values) => {
                         for (i, v) in values.iter().enumerate() {
-                            println!("read {i}: {v:?} ({})", String::from_utf8_lossy(v));
+                            println!("read {i}: {v:?} ({})", san(&String::from_utf8_lossy(v)));
                         }
                     }
                     Err(e) => {
@@ -984,7 +1012,7 @@ pub fn run(cli: Cli) {
                     })
                 });
                 match res {
-                    Ok(v) => println!("{v:?} ({})", String::from_utf8_lossy(&v)),
+                    Ok(v) => println!("{v:?} ({})", san(&String::from_utf8_lossy(&v))),
                     Err(e) => {
                         eprintln!("ctf write-then-read: {e}\n  fix: {}", e.remediation());
                         fail();
@@ -1072,6 +1100,7 @@ fn fail() -> ! {
 fn emit(
     checks: &[crate::checks::CheckResult],
     loc: &serde_json::Value,
+    device: &str,
     extra: serde_json::Value,
     json: bool,
     sarif: &Option<std::path::PathBuf>,
@@ -1088,18 +1117,19 @@ fn emit(
             fail();
         }
     };
-    let diff = base.as_ref().map(|b| baseline::diff(checks, b));
+    let diff = base.as_ref().map(|b| baseline::diff(checks, b, device));
     let code = crate::report::gate_exit(
         checks,
         sev,
         diff.as_ref().map(|d| d.new_failures.as_slice()),
     );
-    let env = crate::report::to_envelope(checks, loc, base.as_ref(), code, extra);
+    let env = crate::report::to_envelope(checks, loc, device, base.as_ref(), code, extra);
     if let Some(path) = sarif {
         let v = crate::sarif::to_sarif(
             &env["score"],
             checks,
             loc["ref"].as_str().filter(|_| loc["kind"] == "file"),
+            device,
         );
         if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap()) {
             eprintln!("sarif: {}: {e}", path.display());

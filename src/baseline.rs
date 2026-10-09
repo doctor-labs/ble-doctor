@@ -60,19 +60,23 @@ pub fn failed_fingerprints(report: &Value) -> HashSet<String> {
 }
 
 /// Failed checks whose fingerprint is not a finding in the baseline.
-pub fn new_failures<'a>(current: &'a [CheckResult], baseline: &Value) -> Vec<&'a CheckResult> {
+pub fn new_failures<'a>(
+    current: &'a [CheckResult],
+    baseline: &Value,
+    device: &str,
+) -> Vec<&'a CheckResult> {
     let known = failed_fingerprints(baseline);
     current
         .iter()
-        .filter(|r| !r.passed && !known.contains(&fingerprint(r)))
+        .filter(|r| !r.passed && !known.contains(&fingerprint(r, device)))
         .collect()
 }
 
-pub fn diff<'a>(current: &'a [CheckResult], baseline: &'a Value) -> BaselineDiff<'a> {
+pub fn diff<'a>(current: &'a [CheckResult], baseline: &'a Value, device: &str) -> BaselineDiff<'a> {
     let now: HashSet<String> = current
         .iter()
         .filter(|r| !r.passed)
-        .map(fingerprint)
+        .map(|r| fingerprint(r, device))
         .collect();
     let resolved = baseline["findings"]
         .as_array()
@@ -82,7 +86,7 @@ pub fn diff<'a>(current: &'a [CheckResult], baseline: &'a Value) -> BaselineDiff
         .collect();
     let base_score = baseline["score"]["value"].as_i64().unwrap_or(100) as i32;
     BaselineDiff {
-        new_failures: new_failures(current, baseline),
+        new_failures: new_failures(current, baseline, device),
         resolved,
         score_delta: i32::from(compute_score(current)) - base_score,
     }
@@ -117,16 +121,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn fp(id: &str, s: Severity, d: &str) -> String {
-        fingerprint(&CheckResult::new(id, s, false, d))
+    fn fp(id: &str) -> String {
+        fingerprint(&CheckResult::new(id, Severity::Low, false, ""), "DEV")
     }
 
     fn base() -> Value {
         json!({"schema": "doctor/1", "score": {"value": 85}, "findings": [
             {"id":"mac_rotation","severity":"medium","message":"static MAC",
-             "fingerprint": fp("mac_rotation", Severity::Medium, "static MAC")},
+             "fingerprint": fp("mac_rotation")},
             {"id":"old_issue","severity":"low","message":"gone soon",
-             "fingerprint": fp("old_issue", Severity::Low, "gone soon")}]})
+             "fingerprint": fp("old_issue")}]})
     }
 
     #[test]
@@ -142,7 +146,7 @@ mod tests {
             ),
         ];
         let b = base();
-        let d = diff(&cur, &b);
+        let d = diff(&cur, &b, "DEV");
         assert_eq!(d.new_failures.len(), 1);
         assert_eq!(d.new_failures[0].id, "unauthenticated_writes");
         assert_eq!(d.resolved.len(), 1);
@@ -157,7 +161,7 @@ mod tests {
             CheckResult::new("w", Severity::High, false, "new one"),
         ];
         let loc = json!({"kind": "device", "ref": "A"});
-        let v = crate::report::to_envelope(&cur, &loc, Some(&base()), 3, json!({}));
+        let v = crate::report::to_envelope(&cur, &loc, "DEV", Some(&base()), 3, json!({}));
         assert_eq!(v["baseline"], json!({"new": 1, "unchanged": 1, "fixed": 1}));
         let states: Vec<_> = v["findings"]
             .as_array()

@@ -205,6 +205,7 @@ pub fn check_dfu_signing_enforced(info: &GattInfo) -> CheckResult {
                      init packet to the DFU control point and classify the response."
                 ),
             )
+            .inconclusive()
         }
     }
 }
@@ -220,7 +221,8 @@ pub fn check_dfu_surface_absent(info: &GattInfo) -> CheckResult {
             false,
             "GATT enumeration did not complete — DFU status unknown (INCONCLUSIVE, not \
              evidence of absence).",
-        );
+        )
+        .inconclusive();
     }
     let found = find_dfu_entry_points(info);
     if !found.is_empty() {
@@ -280,15 +282,24 @@ pub struct CheckResult {
     pub severity: Severity,
     pub passed: bool,
     pub detail: String,
+    /// No verdict reached (doctor/1 `coverage_gaps`); set only by checks that can be inconclusive.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub inconclusive: bool,
 }
 
 impl CheckResult {
+    pub fn inconclusive(mut self) -> Self {
+        self.inconclusive = true;
+        self
+    }
+
     pub fn new(id: &str, severity: Severity, passed: bool, detail: impl Into<String>) -> Self {
         Self {
             id: id.to_string(),
             severity,
             passed,
             detail: detail.into(),
+            inconclusive: false,
         }
     }
 }

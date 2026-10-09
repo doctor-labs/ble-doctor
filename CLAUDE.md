@@ -25,7 +25,7 @@ attribution) live in AGENTS.md — read it before changing anything:
   (`rule_docs/<id>.md`, 4 headings) — #7 / #23
 - `report.rs`, `sarif.rs` — product-of-survival score (`SEVERITY_WEIGHT` CRIT50/HIGH30/MED15/LOW5/INFO0)
   + doctor/1 envelope (`docs/doctor-contract.md`) / table / the one `sanitize()` for human output
-  + SARIF 2.1.0 (16-hex fingerprint, volatile fields masked) — #7
+  + SARIF 2.1.0 (16-hex fingerprint = rule id + device identity) — #7
 - `probe/write.rs` `read.rs` `dfu.rs` — opt-in probes, firmware denylist, `--allow-dangerous` — #8/#9/#10
 - `capture.rs` — native btsnoop/pcap parse + MAC-rotation (`MIN_ROTATION_OBSERVATION_SECONDS=600`) — #11
 - `recon.rs` `ctf.rs` `baseline.rs` `handoff.rs` — v1-parity extras — #21/#22/#26/#27

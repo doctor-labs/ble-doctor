@@ -11,8 +11,8 @@ Breaking: `scan --json` and `analyze --json` now emit the shared `doctor/1` enve
 - Exit codes: every error is now 2 (was 1); `--fail-on` (default `high`, now also `critical`) gates
   `scan`/`analyze` with exit 1; `--baseline` gates new findings with 3. `scan` and `analyze` both take
   `--sarif`, `--baseline`, `--fail-on`.
-- Fingerprints are 16 hex (was 32); SARIF key is `doctorFinding/v1` (was `bleDoctorFinding/v1`).
+- Fingerprints are 16 hex (was 32) and hash rule id + device identity only (no severity or detail); SARIF key is `doctorFinding/v1` (was `bleDoctorFinding/v1`).
 - Baselines must be a `doctor/1` envelope; match is by fingerprint. Old reports are rejected.
 - `scan --json`: the device list now goes to stderr so stdout is a single JSON document.
-- Human output (table, TUI, stderr diff, scan device list) strips control/bidi/zero-width characters.
+- Human output (table, TUI, stderr diff, scan, recon, fingerprint, read-values, probes) strips control/bidi/zero-width characters.
 - MCP `scan`/`analyze` accept `baseline`, `fail_on`, `sarif` and return the envelope on exit 1/3.

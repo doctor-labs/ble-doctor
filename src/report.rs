@@ -38,14 +38,9 @@ pub fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// An INFO check that could not reach a verdict (short capture, GATT not enumerated).
-fn is_inconclusive(r: &CheckResult) -> bool {
-    !r.passed && r.severity == Severity::Info && r.detail.contains("INCONCLUSIVE")
-}
-
 /// Checks that could not run to a verdict.
 pub fn coverage_gaps(results: &[CheckResult]) -> usize {
-    results.iter().filter(|r| is_inconclusive(r)).count()
+    results.iter().filter(|r| r.inconclusive).count()
 }
 
 /// `good` (>=90), `needs work` (>=60), `critical`; `incomplete` replaces `good` on coverage gaps.
@@ -68,11 +63,11 @@ pub fn gate_exit(results: &[CheckResult], fail_on: Severity, new: Option<&[&Chec
 }
 
 /// One finding object (doctor/1 section 2) for a FAILED check.
-fn finding(r: &CheckResult, location: &Value, state: Option<&str>) -> Value {
+fn finding(r: &CheckResult, location: &Value, device: &str, state: Option<&str>) -> Value {
     let rule = crate::rules::get(&r.id);
     let mut f = json!({
         "id": r.id,
-        "fingerprint": crate::sarif::fingerprint(r),
+        "fingerprint": crate::sarif::fingerprint(r, device),
         "severity": r.severity,
         "category": rule.map_or("other", |x| x.category),
         "message": r.detail,
@@ -90,6 +85,7 @@ fn finding(r: &CheckResult, location: &Value, state: Option<&str>) -> Value {
 pub fn to_envelope(
     results: &[CheckResult],
     location: &Value,
+    device: &str,
     baseline: Option<&Value>,
     exit: i32,
     extra: Value,
@@ -98,7 +94,7 @@ pub fn to_envelope(
     let mut failed: Vec<(&CheckResult, String)> = results
         .iter()
         .filter(|r| !r.passed)
-        .map(|r| (r, crate::sarif::fingerprint(r)))
+        .map(|r| (r, crate::sarif::fingerprint(r, device)))
         .collect();
     failed.sort_by(|a, b| (b.0.severity, &a.0.id, &a.1).cmp(&(a.0.severity, &b.0.id, &b.1)));
     let findings: Vec<Value> = failed
@@ -107,7 +103,7 @@ pub fn to_envelope(
             let st = known
                 .as_ref()
                 .map(|k| if k.contains(fp) { "unchanged" } else { "new" });
-            finding(r, location, st)
+            finding(r, location, device, st)
         })
         .collect();
     let value = compute_score(results);
@@ -198,7 +194,7 @@ mod tests {
             CheckResult::new("ok", Severity::Info, true, "fine"),
         ];
         let loc = json!({"kind": "device", "ref": "AA"});
-        let v = to_envelope(&r, &loc, None, 1, json!({}));
+        let v = to_envelope(&r, &loc, "AA", None, 1, json!({}));
         assert_eq!(v["score"]["value"], 70);
         assert_eq!(v["score"]["label"], "needs work");
         assert_eq!(v["findings"].as_array().unwrap().len(), 1);
@@ -210,6 +206,20 @@ mod tests {
     }
 
     /// doctor/1 section 8: an ESC sequence in an attacker-controlled detail never reaches the table.
+    #[test]
+    fn explicit_inconclusive_flag_counts_as_coverage_gap() {
+        let r = [
+            CheckResult::new("dfu_signing_enforced", Severity::Info, true, "x").inconclusive(),
+            CheckResult::new(
+                "a",
+                Severity::Info,
+                false,
+                "mentions INCONCLUSIVE only in text",
+            ),
+        ];
+        assert_eq!(coverage_gaps(&r), 1);
+    }
+
     #[test]
     fn esc_does_not_reach_human_output() {
         let r = [CheckResult::new(
