@@ -13,6 +13,15 @@ use doctor_kit::baseline::Saved;
 use doctor_kit::doctor::PreflightKind;
 use doctor_kit::{Check, Collected, Ctx, Doctor, Node, ScanFailure, TargetKind};
 use serde_json::{json, Value};
+/// `println!` that survives a closed stdout: the preamble must not panic (101) before the kit's
+/// report reaches the same broken pipe and exits 2.
+macro_rules! say {
+    ($($a:tt)*) => {{
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), $($a)*);
+    }};
+}
+
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
@@ -58,7 +67,7 @@ pub fn print_devices(devs: &[DiscoveredDevice], out: Out) {
             d.rssi.map_or("-".into(), |r| r.to_string())
         );
         match out {
-            Out::Human => println!("{line}"),
+            Out::Human => say!("{line}"),
             Out::Machine => eprintln!("{line}"),
             Out::Quiet => {}
         }
@@ -93,7 +102,7 @@ where
     print_devices(&devs, out);
     let d = select_target_device(&devs, target).map_err(|e| failure(format!("scan: {e}\n")))?;
     if out == Out::Human {
-        println!("selected: {}", sanitize(&d.id));
+        say!("selected: {}", sanitize(&d.id));
     }
     let name = d.adv_local_name.clone().or_else(|| d.name.clone());
     let id = d.id.clone();
@@ -204,14 +213,14 @@ impl BleDoctor {
             self.out,
         ))?;
         if self.out == Out::Human {
-            println!(
+            say!(
                 "gatt: {} services, {} writable, {} subscribable",
                 g.service_uuids.len(),
                 g.writable_chars.len(),
                 g.subscribe_chars.len()
             );
             for w in &g.writable_chars {
-                println!(
+                say!(
                     "  write {} requires_bonding={} ({})",
                     sanitize(&w.uuid),
                     w.requires_bonding,
@@ -219,7 +228,7 @@ impl BleDoctor {
                 );
             }
             for s in &g.subscribe_chars {
-                println!("  notify {} cccd={:?}", sanitize(&s.uuid), s.cccd);
+                say!("  notify {} cccd={:?}", sanitize(&s.uuid), s.cccd);
             }
         }
         let c = live_collected(&g, target);
@@ -249,13 +258,13 @@ impl BleDoctor {
             ""
         };
         if self.out == Out::Human {
-            println!(
+            say!(
                 "capture: {} ({} adv frames)",
                 sanitize(info.capture_flavour.as_deref().unwrap_or("unknown")),
                 info.adv_mac_addresses.len()
             );
             for l in &smp.summary {
-                println!("{}", sanitize(l));
+                say!("{}", sanitize(l));
             }
         }
         let loc = Location::new(LocationKind::File, path.display().to_string());
@@ -347,7 +356,7 @@ impl Doctor for BleDoctor {
     }
     fn mcp_texts(&self) -> doctor_kit::mcp::McpTexts {
         doctor_kit::mcp::McpTexts {
-            unknown_tool: r#"{"error":"unknown tool: {t}"}"#.into(),
+            unknown_tool: r#"{"error":"unknown tool: {t_esc}"}"#.into(),
             ..Default::default()
         }
     }

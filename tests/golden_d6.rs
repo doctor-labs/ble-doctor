@@ -162,3 +162,60 @@ fn mcp_protocol_fixes_and_unknown_tool() {
     assert!(out.status.success());
     golden("d6_mcp_protocol.jsonl", &mask(&out.stdout));
 }
+
+/// doctor-kit 0.2.2: a tool name with quotes still yields valid JSON in the unknown-tool text, as
+/// 0.2.0's `json!({"error": ..})` did.
+#[test]
+fn mcp_unknown_tool_name_with_quotes_is_escaped() {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    let mut child = Command::new(BIN)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"x\\\"y\",\"arguments\":{}}}\n")
+        .unwrap();
+    drop(stdin);
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    child.wait().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let text = v["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: serde_json::Value = serde_json::from_str(text).expect("the text is valid JSON");
+    assert_eq!(inner["error"], "unknown tool: x\"y");
+    assert_eq!(v["result"]["isError"], true);
+}
+
+/// doctor-kit 0.2.2 (contract): output into a closed pipe (`ble-doctor ... | head`) exits 2 with
+/// `error: cannot write to stdout`, it no longer panics (101).
+#[test]
+fn closed_stdout_exits_2_not_a_panic() {
+    use std::process::Stdio;
+    for args in [
+        vec!["analyze", PCAP, "--json"],
+        vec!["analyze", PCAP, "--headless"],
+    ] {
+        let mut child = Command::new(BIN)
+            .args(&args)
+            .current_dir(root().join("fixtures"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take()); // the reader is gone before the report is written
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {err}");
+        assert!(err.contains("cannot write to stdout"), "{args:?}: {err}");
+    }
+}
