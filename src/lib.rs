@@ -24,4 +24,3 @@ pub mod sarif;
 pub mod smp;
 pub mod sniffer;
 pub mod testkit;
-pub mod tui;

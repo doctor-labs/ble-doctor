@@ -1,7 +1,9 @@
-//! Baseline diffing: which failures are NEW versus a saved known-good report (v1 `baseline.py`).
+//! Baseline diffing over check results: which failures are NEW versus a saved known-good report (v1
+//! `baseline.py`). Loading and gating a baseline is doctor-kit's (`--baseline`); this stays as the
+//! reference the kit pipeline is tested against; `load` serves `handoff`.
 
 use crate::checks::CheckResult;
-use crate::report::{compute_score, sanitize};
+use crate::report::compute_score;
 use crate::sarif::fingerprint;
 use serde::Serialize;
 use serde_json::Value;
@@ -74,30 +76,6 @@ pub fn diff<'a>(current: &'a [CheckResult], baseline: &'a Value, device: &str) -
         new_failures: new_failures(current, baseline, device),
         resolved,
         score_delta: i32::from(compute_score(current)) - base_score,
-    }
-}
-
-/// Print the diff to stderr (stdout stays clean for `--json`).
-pub fn report_diff(d: &BaselineDiff) {
-    eprintln!("baseline: score delta {:+}", d.score_delta);
-    for r in &d.new_failures {
-        eprintln!(
-            "  NEW      {:?} {}: {}",
-            r.severity,
-            sanitize(&r.id),
-            sanitize(&r.detail)
-        );
-    }
-    for f in &d.resolved {
-        eprintln!(
-            "  RESOLVED {} {}: {}",
-            sanitize(f["severity"].as_str().unwrap_or("?")),
-            sanitize(f["id"].as_str().unwrap_or("?")),
-            sanitize(f["message"].as_str().unwrap_or(""))
-        );
-    }
-    if d.new_failures.is_empty() && d.resolved.is_empty() {
-        eprintln!("  no change");
     }
 }
 

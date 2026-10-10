@@ -38,12 +38,17 @@ Usage: ble-doctor scan [OPTIONS]
 
 Options:
       --adapter <ADAPTER>        Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --face <FACE>              Output face [default: rich] [possible values: plain, rich, compact]
       --target <TARGET>          Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --theme <THEME>            mono | clinical | contrast (default: the doctor's own theme)
       --timeout <TIMEOUT>        Scan duration in seconds [default: 5]
       --mtu <MTU>                Request exactly this ATT MTU from --target (a BLE address; Linux only)
       --as-address <AS_ADDRESS>  Connect to --target presenting this BLE address (LE Set Random Address; Linux only)
+      --color <COLOR>            [default: auto] [possible values: auto, always, never]
       --json                     Emit the doctor/1 JSON envelope (needs --target)
+      --score                    Print only the score number
       --tui                      Show the findings in an interactive terminal UI (needs --target)
+      --headless                 Plain text, no color: for CI and pipes
       --sarif <SARIF>            Write a SARIF 2.1.0 report to this file (needs --target)
       --baseline <BASELINE>      Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
       --fail-on <FAIL_ON>        Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity [default: high] [possible values: info, low, medium, high, critical]
