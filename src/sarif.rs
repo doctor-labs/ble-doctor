@@ -1,20 +1,12 @@
 //! SARIF 2.1.0 output (v1 `sarif.py`). Only FAILED findings become results.
 
 use crate::checks::{CheckResult, Severity};
+use doctor_core::Score;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
+pub use doctor_core::sarif::SCHEMA_URI as SARIF_SCHEMA;
 const INFORMATION_URI: &str = "https://github.com/doctor-labs/ble-doctor";
-
-fn level(s: Severity) -> &'static str {
-    match s {
-        Severity::Critical | Severity::High => "error",
-        Severity::Medium => "warning",
-        Severity::Low | Severity::Info => "note",
-    }
-}
 
 fn security_severity(s: Severity) -> &'static str {
     match s {
@@ -32,18 +24,13 @@ fn security_severity(s: Severity) -> &'static str {
 /// JSON, SARIF and baseline. Device = the `--target` as passed (scan) or the single peripheral
 /// address in the capture, else empty (analyze); never a file path.
 pub fn fingerprint(r: &CheckResult, device: &str) -> String {
-    let text = format!("{}\n{}", r.id, device.trim().to_uppercase());
-    let hex: String = Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    hex[..16].to_string()
+    doctor_core::fingerprint(format!("{}\n{}", r.id, device.trim().to_uppercase()).as_bytes())
 }
 
 /// One SARIF run. `score` (the doctor/1 score object) is recorded in run properties. `location` is the artifact URI
 /// (a capture path); `None` = live scan (logical "BLE device" location).
 pub fn to_sarif(
-    score: &Value,
+    score: &Score,
     results: &[CheckResult],
     location: Option<&str>,
     device: &str,
@@ -60,7 +47,7 @@ pub fn to_sarif(
             json!({
                 "id": id, "name": id,
                 "shortDescription": {"text": id},
-                "defaultConfiguration": {"level": level(*s)},
+                "defaultConfiguration": {"level": s.sarif_level()},
                 "properties": {"tags": ["security", "bluetooth"], "security-severity": security_severity(*s)},
             })
         })
@@ -77,24 +64,22 @@ pub fn to_sarif(
             json!({
                 "ruleId": r.id,
                 "ruleIndex": worst.keys().position(|k| *k == r.id).unwrap(),
-                "level": level(r.severity),
+                "level": r.severity.sarif_level(),
                 "message": {"text": r.detail},
                 "locations": [loc.clone()],
-                "partialFingerprints": {"doctorFinding/v1": fingerprint(r, device)},
+                "partialFingerprints": doctor_core::sarif::partial_fingerprints(&fingerprint(r, device)),
                 "properties": {"severity": r.severity.as_str()},
             })
         })
         .collect();
-    json!({
-        "$schema": SARIF_SCHEMA,
-        "version": "2.1.0",
-        "runs": [{
-            "tool": {"driver": {"name": "ble-doctor", "version": env!("CARGO_PKG_VERSION"),
-                                "informationUri": INFORMATION_URI, "rules": rules}},
-            "results": out,
-            "properties": {"score": score},
-        }],
-    })
+    doctor_core::sarif::document(
+        "ble-doctor",
+        env!("CARGO_PKG_VERSION"),
+        INFORMATION_URI,
+        rules,
+        out,
+        score,
+    )
 }
 
 #[cfg(test)]
@@ -113,7 +98,7 @@ mod tests {
             r("b", Severity::Info, true, "ok"),
             r("c", Severity::Medium, false, "mid"),
         ];
-        let v = to_sarif(&json!(40), &rs, None, "AA");
+        let v = to_sarif(&Score::new(40, "ble/1", 0), &rs, None, "AA");
         assert_eq!(v["version"], "2.1.0");
         assert_eq!(v["$schema"], SARIF_SCHEMA);
         let run = &v["runs"][0];
@@ -143,13 +128,12 @@ mod tests {
         );
         assert_eq!(security_severity(Severity::Low), "3.0");
         assert_eq!(security_severity(Severity::Info), "0.0");
-        assert_eq!(level(Severity::Info), "note");
     }
 
     #[test]
     fn capture_location_is_physical() {
         let v = to_sarif(
-            &json!(100),
+            &Score::new(100, "ble/1", 0),
             &[r("a", Severity::Low, false, "x")],
             Some("my cap.pcap"),
             "",

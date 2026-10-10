@@ -1,6 +1,7 @@
 //! Score + report rendering (v1 `report.py`).
 
 use crate::checks::{CheckResult, Severity};
+use doctor_core::{BaselineCounts, BaselineState, Envelope, ExitCode, Finding, Location, Score};
 use serde_json::{json, Value};
 
 /// Score penalty per failed check, in percent.
@@ -23,19 +24,13 @@ pub fn compute_score(results: &[CheckResult]) -> u8 {
     (score + 0.5).floor().clamp(0.0, 100.0) as u8
 }
 
-/// Strip control / invisible / bidi / format characters (whitespace becomes a plain space).
-/// The one helper for every human renderer (table, stderr diff, TUI, handoff, scan device list):
+/// The one sanitizer for every human renderer (table, stderr diff, TUI, handoff, scan device list):
 /// device names and GATT strings come off the air and are attacker-controlled.
-pub fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_whitespace() { ' ' } else { c })
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(*c as u32,
-                    0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
-                    | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE007F)
-        })
-        .collect()
+pub use doctor_core::sanitize;
+
+/// The doctor/1 score object: ble's formula, shared shape and labels.
+pub fn score(results: &[CheckResult]) -> Score {
+    Score::new(compute_score(results), "ble/1", coverage_gaps(results))
 }
 
 /// Checks that could not run to a verdict.
@@ -43,90 +38,95 @@ pub fn coverage_gaps(results: &[CheckResult]) -> usize {
     results.iter().filter(|r| r.inconclusive).count()
 }
 
-/// `good` (>=90), `needs work` (>=60), `critical`; `incomplete` replaces `good` on coverage gaps.
-pub fn score_label(value: u8, gaps: usize) -> &'static str {
-    match value {
-        90.. if gaps > 0 => "incomplete",
-        90.. => "good",
-        60.. => "needs work",
-        _ => "critical",
-    }
-}
-
 /// Exit code for a findings run (doctor/1 section 4). With a baseline only NEW findings gate (3).
 pub fn gate_exit(results: &[CheckResult], fail_on: Severity, new: Option<&[&CheckResult]>) -> i32 {
     let hit = |r: &CheckResult| !r.passed && r.severity >= fail_on;
-    match new {
-        Some(n) => 3 * i32::from(n.iter().any(|r| hit(r))),
-        None => i32::from(results.iter().any(hit)),
-    }
+    i32::from(
+        match new {
+            Some(n) if n.iter().any(|r| hit(r)) => ExitCode::NewFindings,
+            Some(_) => ExitCode::Ok,
+            None if results.iter().any(hit) => ExitCode::Findings,
+            None => ExitCode::Ok,
+        }
+        .code(),
+    )
 }
 
-/// One finding object (doctor/1 section 2) for a FAILED check.
-fn finding(r: &CheckResult, location: &Value, device: &str, state: Option<&str>) -> Value {
+/// One finding (doctor/1 section 2) for a FAILED check.
+fn finding(
+    r: &CheckResult,
+    location: &Location,
+    fingerprint: String,
+    state: Option<BaselineState>,
+) -> Finding {
     let rule = crate::rules::get(&r.id);
-    let mut f = json!({
-        "id": r.id,
-        "fingerprint": crate::sarif::fingerprint(r, device),
-        "severity": r.severity,
-        "category": rule.map_or("other", |x| x.category),
-        "message": r.detail,
-        "location": location,
-        "remedy": crate::rules::remedy(&r.id),
-    });
-    if let Some(s) = state {
-        f["baseline_state"] = json!(s);
+    Finding {
+        id: r.id.clone(),
+        fingerprint,
+        severity: r.severity,
+        confidence: None,
+        category: rule.map_or("other", |x| x.category).to_string(),
+        message: r.detail.clone(),
+        location: location.clone(),
+        evidence: vec![],
+        remedy: crate::rules::remedy(&r.id),
+        baseline_state: state,
+        extra: Default::default(),
     }
-    f
 }
 
-/// The doctor/1 envelope. `location` is `{kind, ref}`; `data` extras (capture info...) are merged
+/// The doctor/1 envelope. `data` extras (capture info...) are merged
 /// under `data` next to `passed` (the passed checks). `exit` is the code this run returns.
 pub fn to_envelope(
     results: &[CheckResult],
-    location: &Value,
+    location: &Location,
     device: &str,
     baseline: Option<&Value>,
     exit: i32,
     extra: Value,
 ) -> Value {
     let known = baseline.map(crate::baseline::failed_fingerprints);
-    let mut failed: Vec<(&CheckResult, String)> = results
+    let failed: Vec<(&CheckResult, String)> = results
         .iter()
         .filter(|r| !r.passed)
         .map(|r| (r, crate::sarif::fingerprint(r, device)))
         .collect();
-    failed.sort_by(|a, b| (b.0.severity, &a.0.id, &a.1).cmp(&(a.0.severity, &b.0.id, &b.1)));
-    let findings: Vec<Value> = failed
+    let mut findings: Vec<Finding> = failed
         .iter()
         .map(|(r, fp)| {
-            let st = known
-                .as_ref()
-                .map(|k| if k.contains(fp) { "unchanged" } else { "new" });
-            finding(r, location, device, st)
+            let st = known.as_ref().map(|k| {
+                if k.contains(fp) {
+                    BaselineState::Unchanged
+                } else {
+                    BaselineState::New
+                }
+            });
+            finding(r, location, fp.clone(), st)
         })
         .collect();
-    let value = compute_score(results);
-    let gaps = coverage_gaps(results);
+    Finding::sort(&mut findings);
     let mut data = json!({ "passed": results.iter().filter(|r| r.passed).collect::<Vec<_>>() });
     if let Value::Object(m) = extra {
         data.as_object_mut().unwrap().extend(m);
     }
-    let mut v = json!({
-        "schema": "doctor/1",
-        "tool": "ble-doctor",
-        "version": env!("CARGO_PKG_VERSION"),
-        "exit_code": exit,
-        "score": {"value": value, "label": score_label(value, gaps), "model": "ble/1", "coverage_gaps": gaps},
-        "findings": findings,
-        "data": data,
-    });
+    let mut env = Envelope::new(
+        "ble-doctor",
+        env!("CARGO_PKG_VERSION"),
+        u8::try_from(exit).expect("exit code fits a u8"),
+        score(results),
+        findings,
+        data,
+    );
     if let Some(k) = known {
         let now: std::collections::HashSet<&String> = failed.iter().map(|f| &f.1).collect();
         let unchanged = now.iter().filter(|f| k.contains(**f)).count();
-        v["baseline"] = json!({"new": now.len() - unchanged, "unchanged": unchanged, "fixed": k.iter().filter(|f| !now.contains(f)).count()});
+        env.baseline = Some(BaselineCounts {
+            new: now.len() - unchanged,
+            unchanged,
+            fixed: k.iter().filter(|f| !now.contains(f)).count(),
+        });
     }
-    v
+    env.to_value()
 }
 
 pub fn to_json(envelope: &Value) -> String {
@@ -193,7 +193,7 @@ mod tests {
             f(Severity::High),
             CheckResult::new("ok", Severity::Info, true, "fine"),
         ];
-        let loc = json!({"kind": "device", "ref": "AA"});
+        let loc = Location::new(doctor_core::LocationKind::Device, "AA");
         let v = to_envelope(&r, &loc, "AA", None, 1, json!({}));
         assert_eq!(v["score"]["value"], 70);
         assert_eq!(v["score"]["label"], "needs work");
@@ -202,7 +202,6 @@ mod tests {
         assert!(to_table(&r).contains("[FAIL] x (high): d"));
         assert_eq!(gate_exit(&r, Severity::High, None), 1);
         assert_eq!(gate_exit(&r, Severity::Critical, None), 0);
-        assert_eq!(score_label(95, 1), "incomplete");
     }
 
     /// doctor/1 section 8: an ESC sequence in an attacker-controlled detail never reaches the table.

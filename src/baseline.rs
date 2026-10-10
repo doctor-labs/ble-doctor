@@ -1,14 +1,11 @@
 //! Baseline diffing: which failures are NEW versus a saved known-good report (v1 `baseline.py`).
 
-use crate::checks::{CheckResult, Severity};
+use crate::checks::CheckResult;
 use crate::report::{compute_score, sanitize};
 use crate::sarif::fingerprint;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
-
-/// Process exit code when NEW failures reach `--fail-on` under `--baseline`.
-pub const EXIT_GATE_FAILED: i32 = 3;
 
 /// Drift between a scan and its baseline.
 #[derive(Debug, Serialize)]
@@ -35,18 +32,6 @@ pub fn load(path: &std::path::Path) -> Result<Value, String> {
         ));
     }
     Ok(v)
-}
-
-pub fn parse_severity(s: &str) -> Option<Severity> {
-    [
-        Severity::Info,
-        Severity::Low,
-        Severity::Medium,
-        Severity::High,
-        Severity::Critical,
-    ]
-    .into_iter()
-    .find(|v| v.as_str() == s)
 }
 
 /// Fingerprints of the findings in a doctor/1 envelope (every finding there is a failure).
@@ -119,6 +104,7 @@ pub fn report_diff(d: &BaselineDiff) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::Severity;
     use serde_json::json;
 
     fn fp(id: &str) -> String {
@@ -160,7 +146,7 @@ mod tests {
             CheckResult::new("mac_rotation", Severity::Medium, false, "static MAC"),
             CheckResult::new("w", Severity::High, false, "new one"),
         ];
-        let loc = json!({"kind": "device", "ref": "A"});
+        let loc = doctor_core::Location::new(doctor_core::LocationKind::Device, "A");
         let v = crate::report::to_envelope(&cur, &loc, "DEV", Some(&base()), 3, json!({}));
         assert_eq!(v["baseline"], json!({"new": 1, "unchanged": 1, "fixed": 1}));
         let states: Vec<_> = v["findings"]

@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 
 pub use crate::capture::check_mac_rotation;
+pub use doctor_core::Severity;
 
 /// DFU/OTA entry points (services and the control-point characteristics themselves, since a
 /// collector may report either): a *superset* mixing services with characteristics that are
@@ -249,30 +250,6 @@ pub fn check_dfu_surface_absent(info: &GattInfo) -> CheckResult {
             info.writable_chars.len()
         ),
     )
-}
-
-/// Finding severity. Ordered: `Info < Low < Medium < High < Critical`. Serializes lowercase (v1 values).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Info,
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
-impl Severity {
-    /// Lowercase name (v1 `Severity.value`).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Severity::Info => "info",
-            Severity::Low => "low",
-            Severity::Medium => "medium",
-            Severity::High => "high",
-            Severity::Critical => "critical",
-        }
-    }
 }
 
 /// One check verdict (v1 `CheckResult`).
