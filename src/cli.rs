@@ -1149,7 +1149,7 @@ fn emit(
         let v = crate::sarif::to_sarif(
             &crate::report::score(checks),
             checks,
-            Some(loc.reference.as_str()).filter(|_| loc.kind == doctor_core::LocationKind::File),
+            (loc.kind == doctor_core::LocationKind::File).then_some(loc.reference.as_str()),
             device,
         );
         if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap()) {
