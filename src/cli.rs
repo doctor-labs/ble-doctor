@@ -304,24 +304,26 @@ fn about(name: &str) -> &'static str {
     }
 }
 
-/// The kit's report tail for a findings command. The kit prefixes `error: ` to failures it
-/// raises itself (bad baseline); ble has always printed those bare.
+/// The kit's report tail for a findings command. `--sarif` is written here, before anything is
+/// printed and not atomically, as ble always has: a failed write is `sarif: <path>: <e>` on stderr,
+/// exit 2, nothing on stdout (so the kit never sees the path: its own write prints first, and its
+/// refusal of `--sarif` == `--baseline` is a new behavior).
 fn findings(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
-    let o = OutputArgs::from_matches(m, bd);
-    let bare = |mut f: doctor_kit::ScanFailure| {
-        f.stderr = f
-            .stderr
-            .strip_prefix("error: ")
-            .unwrap_or(&f.stderr)
-            .to_string();
-        doctor_kit::output::report_failure(bd, &f)
-    };
+    let mut o = OutputArgs::from_matches(m, bd);
+    let sarif = o.sarif.take();
     let pre = match preflight(bd, &o) {
         Ok(p) => p,
-        Err(f) => return Ok(bare(f)),
+        Err(f) => return Ok(doctor_kit::output::report_failure(bd, &f)),
     };
     let ctx = Ctx::detached(Default::default(), o.fail_on);
-    Ok(kit_finish(bd, pre, bd.try_scan(&ctx), &o))
+    let scanned = bd.try_scan(&ctx);
+    if let (Some(path), Ok(env)) = (&sarif, &scanned) {
+        if let Err(e) = std::fs::write(path, bd.render_sarif(env)) {
+            eprintln!("sarif: {}: {e}", path.display());
+            fail();
+        }
+    }
+    Ok(kit_finish(bd, pre, scanned, &o))
 }
 
 /// A findings command: ble's own arguments plus the kit's presentation flags (`--theme-file` is
@@ -377,9 +379,10 @@ pub fn extensions() -> Extensions<BleDoctor> {
                 let results = doctor::run_doctor(&doctor::Probes::detect(), Platform::current());
                 std::process::exit(doctor::print_report(&results))
             }),
-            plain(8, "mcp", |_, _| {
-                crate::mcp::serve();
-                Ok(0)
+            plain(8, "mcp", |bd, _| {
+                doctor_kit::mcp::serve(bd)
+                    .map(|_| 0)
+                    .map_err(|e| e.to_string())
             }),
             ext!(9, "recon", ReconArgs, recon),
             ext!(10, "ctf", CtfArgs, ctf),

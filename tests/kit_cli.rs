@@ -48,20 +48,10 @@ fn score_and_json_keep_stdout_clean() {
 }
 
 #[test]
-fn bad_baseline_and_sarif_clash_are_refused_before_any_output() {
+fn bad_baseline_is_refused_before_any_output() {
     let (code, out, err) = run(&["analyze", "mac_rotation.pcap", "--baseline", "nope.json"]);
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.starts_with("baseline nope.json: "), "{err}");
-    let (code, out, err) = run(&[
-        "analyze",
-        "mac_rotation.pcap",
-        "--baseline",
-        "baseline_empty.json",
-        "--sarif",
-        "baseline_empty.json",
-    ]);
-    assert_eq!((code, out.as_str()), (2, ""));
-    assert!(err.contains("same file"), "{err}");
 }
 
 fn scratch(name: &str) -> std::path::PathBuf {

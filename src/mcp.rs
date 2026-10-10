@@ -1,11 +1,12 @@
-//! MCP server (hand-rolled stdio JSON-RPC). Exposes ONLY `scan` and `analyze`.
+//! MCP tools. Exposes ONLY `scan` and `analyze`; the stdio loop is doctor-kit's (`BleDoctor::mcp_tools`).
 //!
 //! Each tool re-invokes this binary with the matching subcommand plus `--json`, so an agent reads
 //! exactly the report a person would. Dangerous subcommands (probe-writes, read-values, dfu,
 //! recon, ctf, raw-radio flags) are not in `TOOLS` and `argv_for` never builds them: no path exists.
 
+use doctor_kit::mcp::{exec_self_fmt, ExecOpts};
+use doctor_kit::McpTool;
 use serde_json::{json, Value};
-use std::io::{BufRead, Write};
 
 /// The complete, closed tool whitelist.
 pub const TOOLS: [&str; 2] = ["scan", "analyze"];
@@ -52,113 +53,82 @@ pub fn argv_for(tool: &str, args: &Value) -> Result<Vec<String>, String> {
     Ok(a)
 }
 
-fn tool_list() -> Value {
+/// Run this binary with `argv`; Ok(stdout) on exit 0/1/3, Err(message) otherwise. The message is the
+/// child's stderr, or `exit <status>` when it said nothing, as ble has always reported it.
+fn run_cli(argv: &[String]) -> Result<String, String> {
+    const MARK: &str = "\u{1}";
+    let opts = ExecOpts {
+        ok_codes: vec![0, 1, 3],
+        timeout: None,
+        max_bytes: usize::MAX / 2,
+    };
+    exec_self_fmt(argv, &opts, Some("\u{1}{code}\u{1}{stderr}")).map_err(|e| {
+        match e.strip_prefix(MARK).and_then(|r| r.split_once(MARK)) {
+            Some((code, "")) => format!("exit exit status: {code}"),
+            Some((_, stderr)) => stderr.to_string(),
+            None => e,
+        }
+    })
+}
+
+/// The two tools, with ble's schemas. Errors are `{"error": <message>}` JSON text.
+pub fn tools() -> Vec<McpTool> {
     let flags = json!({
         "baseline": {"type": "string", "description": "Saved doctor/1 --json envelope to diff against"},
         "fail_on": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
         "sarif": {"type": "string", "description": "Write SARIF 2.1.0 to this file"}
     });
-    let with = |mut p: Value| {
-        p.as_object_mut()
+    let tool = |name: &'static str, description: &str, own: Value, required: Option<&str>| {
+        let mut props = own;
+        props
+            .as_object_mut()
             .unwrap()
             .extend(flags.as_object().unwrap().clone());
-        p
-    };
-    json!([
-        {"name": "scan",
-         "description": "Score a live BLE device by passive GATT enumeration (same doctor/1 JSON as `ble-doctor scan --json`).",
-         "inputSchema": {"type": "object", "properties": with(json!({"target": {"type": "string"}}))}},
-        {"name": "analyze",
-         "description": "Score a BLE capture file (same doctor/1 JSON as `ble-doctor analyze --json`).",
-         "inputSchema": {"type": "object", "properties": with(json!({"capture_file": {"type": "string"}})),
-                         "required": ["capture_file"]}}
-    ])
-}
-
-/// Run this binary with `argv`; Ok(stdout) on exit 0/1/3, Err(message) otherwise.
-fn run_cli(argv: &[String]) -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let out = std::process::Command::new(exe)
-        .args(argv)
-        .output()
-        .map_err(|e| e.to_string())?;
-    // Exit 1 (findings) and 3 (new vs baseline) still print the envelope; only 2/signals are errors.
-    if matches!(out.status.code(), Some(0 | 1 | 3)) && !out.stdout.is_empty() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if msg.is_empty() {
-            format!("exit {}", out.status)
-        } else {
-            msg
-        })
-    }
-}
-
-/// Handle one JSON-RPC message. Returns None for notifications.
-pub fn handle(msg: &Value, run: &dyn Fn(&[String]) -> Result<String, String>) -> Option<Value> {
-    let id = msg.get("id")?.clone();
-    let reply = |r: Result<Value, (i64, String)>| match r {
-        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-        Err((code, m)) => {
-            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": m}})
+        let mut schema = json!({"type": "object", "properties": props});
+        if let Some(r) = required {
+            schema["required"] = json!([r]);
+        }
+        McpTool {
+            name: name.into(),
+            description: description.into(),
+            schema,
+            call: Box::new(move |args| {
+                argv_for(name, args)
+                    .and_then(|a| run_cli(&a))
+                    .map_err(|e| json!({"error": e}).to_string())
+            }),
         }
     };
-    let params = msg.get("params").cloned().unwrap_or(Value::Null);
-    Some(reply(match msg.get("method").and_then(Value::as_str) {
-        Some("initialize") => Ok(json!({
-            "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2024-11-05"),
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "ble-doctor", "version": env!("CARGO_PKG_VERSION")}
-        })),
-        Some("ping") => Ok(json!({})),
-        Some("tools/list") => Ok(json!({"tools": tool_list()})),
-        Some("tools/call") => {
-            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            let res = argv_for(name, &args).and_then(|a| run(&a));
-            let (text, is_error) = match res {
-                Ok(t) => (t, false),
-                Err(e) => (json!({"error": e}).to_string(), true),
-            };
-            Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
-        }
-        _ => Err((-32601, "method not found".into())),
-    }))
-}
-
-/// Serve MCP over stdio (newline-delimited JSON-RPC) until stdin closes.
-pub fn serve() {
-    let mut out = std::io::stdout().lock();
-    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-        let resp = match serde_json::from_str::<Value>(&line) {
-            Ok(m) => handle(&m, &run_cli),
-            Err(_) => Some(json!({"jsonrpc": "2.0", "id": null,
-                "error": {"code": -32700, "message": "parse error"}})),
-        };
-        if let Some(r) = resp {
-            let _ = writeln!(out, "{r}");
-            let _ = out.flush();
-        }
-    }
+    vec![
+        tool(
+            "scan",
+            "Score a live BLE device by passive GATT enumeration (same doctor/1 JSON as `ble-doctor scan --json`).",
+            json!({"target": {"type": "string"}}),
+            None,
+        ),
+        tool(
+            "analyze",
+            "Score a BLE capture file (same doctor/1 JSON as `ble-doctor analyze --json`).",
+            json!({"capture_file": {"type": "string"}}),
+            Some("capture_file"),
+        ),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kit::{BleDoctor, Out, Subject};
     use std::collections::BTreeSet;
 
-    fn never(_: &[String]) -> Result<String, String> {
-        panic!("runner must not be called")
+    fn call(req: Value) -> Value {
+        let d = BleDoctor::new(Subject::None, None, Out::Quiet);
+        doctor_kit::mcp::handle(&d, &req).unwrap()
     }
 
     #[test]
     fn tools_list_is_exactly_scan_and_analyze() {
-        let r = handle(
-            &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
-            &never,
-        )
-        .unwrap();
+        let r = call(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
         let names: BTreeSet<&str> = r["result"]["tools"]
             .as_array()
             .unwrap()
@@ -180,14 +150,11 @@ mod tests {
             "ctf",
             "doctor",
             "mcp",
+            "fix",
         ] {
             assert!(argv_for(t, &json!({})).is_err(), "{t} reachable");
-            let r = handle(
-                &json!({"id":1,"method":"tools/call","params":{"name":t,"arguments":{}}}),
-                &never,
-            )
-            .unwrap();
-            assert_eq!(r["result"]["isError"], true);
+            let r = call(json!({"id":1,"method":"tools/call","params":{"name":t,"arguments":{}}}));
+            assert_eq!(r["result"]["isError"], true, "{t}");
         }
     }
 
@@ -197,12 +164,14 @@ mod tests {
         assert!(argv_for("scan", &json!({"target": "-x"})).is_err());
         assert!(argv_for("analyze", &json!({"capture_file": "--help"})).is_err());
         assert!(argv_for("analyze", &json!({})).is_err());
-        let r = handle(
-            &json!({"id":1,"method":"tools/call","params":{"name":"scan","arguments":{"target":"-v"}}}),
-            &never,
-        )
-        .unwrap();
+        let r = call(
+            json!({"id":1,"method":"tools/call","params":{"name":"scan","arguments":{"target":"-v"}}}),
+        );
         assert_eq!(r["result"]["isError"], true);
+        assert_eq!(
+            r["result"]["content"][0]["text"],
+            r#"{"error":"target must be a value, not an option"}"#
+        );
     }
 
     #[test]
@@ -224,17 +193,5 @@ mod tests {
             ["analyze", "c", "--json", "--baseline", "b.json", "--fail-on", "low", "--sarif", "o.sarif"]
         );
         assert!(argv_for("scan", &json!({"baseline": "-x"})).is_err());
-    }
-
-    #[test]
-    fn call_routes_through_runner_and_notifications_get_no_reply() {
-        let run = |a: &[String]| Ok(format!("ran {}", a[0]));
-        let r = handle(
-            &json!({"id":2,"method":"tools/call","params":{"name":"analyze","arguments":{"capture_file":"c"}}}),
-            &run,
-        )
-        .unwrap();
-        assert_eq!(r["result"]["content"][0]["text"], "ran analyze");
-        assert!(handle(&json!({"method":"notifications/initialized"}), &never).is_none());
     }
 }

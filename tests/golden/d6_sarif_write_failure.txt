@@ -1,0 +1,4 @@
+exit: 2
+--- stdout ---
+--- stderr ---
+sarif: no-such-dir/out.sarif: No such file or directory (os error 2)
