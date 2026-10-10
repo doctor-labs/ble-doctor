@@ -1,0 +1,7 @@
+{"id":1,"jsonrpc":"2.0","result":{}}
+{"id":2,"jsonrpc":"2.0","result":{"content":[{"text":"{\"error\":\"unknown tool: dfu\"}","type":"text"}],"isError":true}}
+{"id":3,"jsonrpc":"2.0","result":{"content":[{"text":"{\"error\":\"unknown tool: fix\"}","type":"text"}],"isError":true}}
+{"error":{"code":-32600,"message":"invalid request"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request: bad id"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request: no method"},"id":9,"jsonrpc":"2.0"}

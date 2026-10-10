@@ -124,3 +124,36 @@ fn sarif_over_baseline_is_not_refused() {
     assert_eq!((code, err.as_str()), (0, "baseline: score delta -15\n  NEW      Medium mac_rotation: MAC address is static across all 3 captured advertisement frames over 700s - trackable.\n"));
     assert!(std::fs::read_to_string(&base).unwrap().contains("\"runs\""));
 }
+
+/// MCP over stdio. Kept (protocol fixes, decision 6): `ping` answers `{}`, and a request that is not
+/// an object, has a bad `id` or no `method` gets JSON-RPC -32600 (0.2.0 stayed silent, echoed the
+/// bad id or said "method not found"). Unchanged: the unknown-tool text `{"error":"unknown tool: dfu"}`.
+#[test]
+fn mcp_protocol_fixes_and_unknown_tool() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let lines = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dfu","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fix","arguments":{}}}"#,
+        "[]",
+        "123",
+        r#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#,
+        r#"{"jsonrpc":"2.0","id":9}"#,
+    ];
+    let mut child = Command::new(BIN)
+        .arg("mcp")
+        .current_dir(root().join("fixtures"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(lines.join("\n").as_bytes()).unwrap();
+    stdin.write_all(b"\n").unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    golden("d6_mcp_protocol.jsonl", &mask(&out.stdout));
+}

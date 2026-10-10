@@ -379,9 +379,10 @@ pub fn extensions() -> Extensions<BleDoctor> {
                 let results = doctor::run_doctor(&doctor::Probes::detect(), Platform::current());
                 std::process::exit(doctor::print_report(&results))
             }),
-            plain(8, "mcp", |_, _| {
-                crate::mcp::serve();
-                Ok(0)
+            plain(8, "mcp", |bd, _| {
+                doctor_kit::mcp::serve(bd)
+                    .map(|_| 0)
+                    .map_err(|e| e.to_string())
             }),
             ext!(9, "recon", ReconArgs, recon),
             ext!(10, "ctf", CtfArgs, ctf),

@@ -285,6 +285,27 @@ impl Doctor for BleDoctor {
         serde_json::to_string_pretty(&env.to_value()).expect("report serializes") + "\n"
     }
 
+    /// Only `scan` and `analyze` (see `mcp::tools`); `fix` is not reachable over MCP.
+    fn mcp_tools(&self) -> Option<Vec<doctor_kit::McpTool>> {
+        Some(crate::mcp::tools())
+    }
+    /// ble's server's wire texts, byte for byte. The protocol fixes of the kit (ping, -32600 for a
+    /// request that is not an object, a bad id or no method) are kept on purpose.
+    fn mcp_wire(&self) -> doctor_kit::McpWire {
+        doctor_kit::McpWire {
+            protocol: doctor_kit::Protocol::EchoClient,
+            parse_error: "parse error".into(),
+            method_not_found: "method not found".into(),
+            blank_line_is_parse_error: true,
+        }
+    }
+    fn mcp_texts(&self) -> doctor_kit::mcp::McpTexts {
+        doctor_kit::mcp::McpTexts {
+            unknown_tool: r#"{"error":"unknown tool: {t}"}"#.into(),
+            ..Default::default()
+        }
+    }
+
     /// ble's SARIF (rules with `security-severity`, check order, no trailing newline).
     fn render_sarif(&self, env: &Envelope) -> String {
         let cache = self.cache.lock().unwrap();
