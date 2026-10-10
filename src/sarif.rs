@@ -27,19 +27,40 @@ pub fn fingerprint(r: &CheckResult, device: &str) -> String {
     doctor_core::fingerprint(format!("{}\n{}", r.id, device.trim().to_uppercase()).as_bytes())
 }
 
-/// One SARIF run. `score` (the doctor/1 score object) is recorded in run properties. `location` is the artifact URI
-/// (a capture path); `None` = live scan (logical "BLE device" location).
+/// One SARIF run for the checks that failed. `score` (the doctor/1 score object) is recorded in run
+/// properties. `location` is the artifact URI (a capture path); `None` = live scan (logical "BLE
+/// device" location).
 pub fn to_sarif(
     score: &Score,
     results: &[CheckResult],
     location: Option<&str>,
     device: &str,
 ) -> Value {
-    let failed: Vec<&CheckResult> = results.iter().filter(|r| !r.passed).collect();
+    document(
+        score,
+        results.iter().filter(|r| !r.passed).map(|r| {
+            (
+                r.id.as_str(),
+                r.severity,
+                r.detail.as_str(),
+                fingerprint(r, device),
+            )
+        }),
+        location,
+    )
+}
+
+/// The SARIF run for failed checks given as `(id, severity, detail, fingerprint)`, in check order.
+pub fn document<'a>(
+    score: &Score,
+    failed: impl IntoIterator<Item = (&'a str, Severity, &'a str, String)>,
+    location: Option<&str>,
+) -> Value {
+    let failed: Vec<_> = failed.into_iter().collect();
     let mut worst: BTreeMap<&str, Severity> = BTreeMap::new();
-    for r in &failed {
-        let e = worst.entry(r.id.as_str()).or_insert(r.severity);
-        *e = (*e).max(r.severity);
+    for (id, sev, ..) in &failed {
+        let e = worst.entry(id).or_insert(*sev);
+        *e = (*e).max(*sev);
     }
     let rules: Vec<Value> = worst
         .iter()
@@ -60,15 +81,15 @@ pub fn to_sarif(
     };
     let out: Vec<Value> = failed
         .iter()
-        .map(|r| {
+        .map(|(id, sev, detail, fp)| {
             json!({
-                "ruleId": r.id,
-                "ruleIndex": worst.keys().position(|k| *k == r.id).unwrap(),
-                "level": r.severity.sarif_level(),
-                "message": {"text": r.detail},
+                "ruleId": id,
+                "ruleIndex": worst.keys().position(|k| k == id).unwrap(),
+                "level": sev.sarif_level(),
+                "message": {"text": detail},
                 "locations": [loc.clone()],
-                "partialFingerprints": doctor_core::sarif::partial_fingerprints(&fingerprint(r, device)),
-                "properties": {"severity": r.severity.as_str()},
+                "partialFingerprints": doctor_core::sarif::partial_fingerprints(fp),
+                "properties": {"severity": sev.as_str()},
             })
         })
         .collect();

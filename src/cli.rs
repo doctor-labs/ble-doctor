@@ -1,194 +1,198 @@
-//! Command-line interface (clap). All handlers are stubs for now.
+//! Command-line interface: doctor-kit's `run_with` owns the process, this module registers ble's own
+//! commands next to the kit's. `analyze` reports through the kit; the other commands (scan, probes,
+//! MITM, CTF, fingerprint, sniffer ...) are plain functions over their arguments.
 
+use crate::kit::{BleDoctor, Subject};
 use crate::report::sanitize as san;
-use clap::{Parser, Subcommand};
-
-/// BLE diagnostics and security CLI.
-#[derive(Parser, Debug)]
-#[command(name = "ble-doctor", version, about)]
-pub struct Cli {
-    /// Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere.
-    #[arg(long, global = true)]
-    pub adapter: Option<String>,
-    #[command(subcommand)]
-    pub command: Command,
-}
+use clap::builder::{PossibleValuesParser, TypedValueParser};
+use clap::{Arg, ArgMatches, Args, FromArgMatches, Subcommand};
+use doctor_core::Severity;
+use doctor_kit::{
+    finish as kit_finish, preflight, Ctx, Doctor, ExtCommand, Extensions, Face, Meta, OutputArgs,
+};
+use std::process::ExitCode;
 
 const SEVERITIES: [&str; 5] = ["info", "low", "medium", "high", "critical"];
 
-/// Top-level subcommands.
-#[derive(Subcommand, Debug)]
-pub enum Command {
-    /// Scan for BLE devices
-    Scan {
-        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
-        #[arg(long, env = "BLE_DOCTOR_TARGET")]
-        target: Option<String>,
-        /// Scan duration in seconds
-        #[arg(long, default_value_t = 5)]
-        timeout: u64,
-        /// Request exactly this ATT MTU from --target (a BLE address; Linux only)
-        #[arg(long, requires = "target")]
-        mtu: Option<u16>,
-        /// Connect to --target presenting this BLE address (LE Set Random Address; Linux only)
-        #[arg(long, requires = "target", conflicts_with = "mtu")]
-        as_address: Option<String>,
-        /// Emit the doctor/1 JSON envelope (needs --target)
-        #[arg(long, requires = "target")]
-        json: bool,
-        /// Show the findings in an interactive terminal UI (needs --target)
-        #[arg(long, requires = "target", conflicts_with = "json")]
-        tui: bool,
-        /// Write a SARIF 2.1.0 report to this file (needs --target)
-        #[arg(long, requires = "target")]
-        sarif: Option<std::path::PathBuf>,
-        /// Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
-        #[arg(long, requires = "target")]
-        baseline: Option<std::path::PathBuf>,
-        /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
-        #[arg(long, default_value = "high", value_parser = SEVERITIES)]
-        fail_on: String,
-    },
-    /// Analyze a capture or device
-    Analyze {
-        /// Path to a btsnoop/pcap capture
-        capture: std::path::PathBuf,
-        /// Emit the doctor/1 JSON envelope
-        #[arg(long)]
-        json: bool,
-        /// Write a SARIF 2.1.0 report to this file
-        #[arg(long)]
-        sarif: Option<std::path::PathBuf>,
-        /// Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
-        #[arg(long)]
-        baseline: Option<std::path::PathBuf>,
-        /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
-        #[arg(long, default_value = "high", value_parser = SEVERITIES)]
-        fail_on: String,
-    },
-    /// Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device
-    Sniff {
-        /// Serial/USB sniffer port (e.g. /dev/ttyACM0)
-        #[arg(long, conflicts_with = "from_file")]
-        device: Option<String>,
-        /// Saved Sniffle text dump to parse instead of live capture
-        #[arg(long)]
-        from_file: Option<std::path::PathBuf>,
-        /// Emit JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)
-    Fingerprint {
-        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
-        #[arg(long, env = "BLE_DOCTOR_TARGET")]
-        target: Option<String>,
-        /// Scan/connect timeout in seconds
-        #[arg(long, default_value_t = 5)]
-        timeout: u64,
-        /// Emit JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Probe writable characteristics (EMPIRICAL: connects without bonding and writes)
-    ProbeWrites {
-        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
-        #[arg(long, env = "BLE_DOCTOR_TARGET")]
-        target: Option<String>,
-        /// Required: this writes to the device. Firmware/DFU characteristics are still
-        /// refused regardless of this flag.
-        #[arg(long)]
-        allow_dangerous: bool,
-        /// Scan/connect timeout in seconds
-        #[arg(long, default_value_t = 5)]
-        timeout: u64,
-        /// Emit JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Read characteristic values on non-SIG services (lists length + preview only)
-    ReadValues {
-        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
-        #[arg(long, env = "BLE_DOCTOR_TARGET")]
-        target: Option<String>,
-        /// Scan/connect timeout in seconds
-        #[arg(long, default_value_t = 5)]
-        timeout: u64,
-    },
-    /// Probe DFU surface (EMPIRICAL buttonless probe: writes to the device without bonding)
-    Dfu {
-        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
-        #[arg(long, env = "BLE_DOCTOR_TARGET")]
-        target: Option<String>,
-        /// Required: this writes to the device.
-        #[arg(long)]
-        allow_dangerous: bool,
-        /// Also probe the bond-sharing buttonless characteristic (8ec90004-...)
-        #[arg(long)]
-        bond_sharing: bool,
-        /// Scan/connect timeout in seconds
-        #[arg(long, default_value_t = 5)]
-        timeout: u64,
-        /// Emit JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Diagnose the local BLE environment
-    Doctor,
-    /// Run the MCP server
-    Mcp,
-    /// Recon a target (native GATT inventory)
-    Recon {
-        /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
-        #[arg(long, env = "BLE_DOCTOR_TARGET")]
-        target: String,
-        /// Scan/connect timeout in seconds
-        #[arg(long, default_value_t = 5)]
-        timeout: u64,
-        /// Also run the external bluesploit cross-check (heuristic, INFO-only, never scored)
-        #[arg(long)]
-        bluesploit: bool,
-        /// Emit JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// CTF helpers (own-gear / CTF scope only; never reachable via `mcp`)
-    Ctf {
-        #[command(subcommand)]
-        action: CtfCmd,
-    },
-    /// Baseline snapshots
-    Baseline,
-    /// Export a handoff bundle
-    Handoff {
-        /// A `scan --json` report file to turn into the bundle (no radio)
-        #[arg(long)]
-        report: std::path::PathBuf,
-    },
-    /// Inspect rules
-    Rules {
-        #[command(subcommand)]
-        action: RulesCmd,
-    },
-    /// Explain a finding (rule doc, plus the finding from a report JSON)
-    Why {
-        /// Rule / check id
-        id: String,
-        /// A `--json` report file to pull the matching finding from
-        #[arg(long)]
-        report: Option<std::path::PathBuf>,
-    },
-    /// GATT MITM: clone the target as a peripheral and relay+log traffic
-    /// to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)
-    Mitm {
-        /// The real target device to relay to (address / identifier / name)
-        #[arg(long, env = "BLE_DOCTOR_TARGET")]
-        target: String,
-        /// Required: this actively intercepts GATT traffic between a victim
-        /// and the real device (scope: own hardware or written authorization only).
-        #[arg(long)]
-        allow_dangerous: bool,
-    },
+/// `--fail-on` as a `Severity`, which is what the kit's `OutputArgs::from_matches` reads.
+fn severity() -> impl TypedValueParser<Value = Severity> {
+    PossibleValuesParser::new(SEVERITIES).map(|s| Severity::parse(&s).expect("listed severity"))
+}
+
+#[derive(Args, Debug)]
+pub struct ScanArgs {
+    /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+    #[arg(long, env = "BLE_DOCTOR_TARGET")]
+    target: Option<String>,
+    /// Scan duration in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+    /// Request exactly this ATT MTU from --target (a BLE address; Linux only)
+    #[arg(long, requires = "target")]
+    mtu: Option<u16>,
+    /// Connect to --target presenting this BLE address (LE Set Random Address; Linux only)
+    #[arg(long, requires = "target", conflicts_with = "mtu")]
+    as_address: Option<String>,
+    /// Emit the doctor/1 JSON envelope (needs --target)
+    #[arg(long, requires = "target")]
+    json: bool,
+    /// Show the findings in an interactive terminal UI (needs --target)
+    #[arg(long, requires = "target", conflicts_with = "json")]
+    tui: bool,
+    /// Write a SARIF 2.1.0 report to this file (needs --target)
+    #[arg(long, requires = "target")]
+    sarif: Option<std::path::PathBuf>,
+    /// Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
+    #[arg(long, requires = "target")]
+    baseline: Option<std::path::PathBuf>,
+    /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
+    #[arg(long, default_value = "high", value_parser = SEVERITIES)]
+    fail_on: String,
+}
+
+#[derive(Args, Debug)]
+pub struct AnalyzeArgs {
+    /// Path to a btsnoop/pcap capture
+    capture: std::path::PathBuf,
+    /// Emit the doctor/1 JSON envelope
+    #[arg(long)]
+    json: bool,
+    /// Write a SARIF 2.1.0 report to this file
+    #[arg(long)]
+    sarif: Option<std::path::PathBuf>,
+    /// Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
+    #[arg(long)]
+    baseline: Option<std::path::PathBuf>,
+    /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
+    #[arg(long, default_value = "high", value_parser = severity())]
+    fail_on: Severity,
+}
+
+#[derive(Args, Debug)]
+pub struct SniffArgs {
+    /// Serial/USB sniffer port (e.g. /dev/ttyACM0)
+    #[arg(long, conflicts_with = "from_file")]
+    device: Option<String>,
+    /// Saved Sniffle text dump to parse instead of live capture
+    #[arg(long)]
+    from_file: Option<std::path::PathBuf>,
+    /// Emit JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct FingerprintArgs {
+    /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+    #[arg(long, env = "BLE_DOCTOR_TARGET")]
+    target: Option<String>,
+    /// Scan/connect timeout in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+    /// Emit JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ProbeWritesArgs {
+    /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+    #[arg(long, env = "BLE_DOCTOR_TARGET")]
+    target: Option<String>,
+    /// Required: this writes to the device. Firmware/DFU characteristics are still
+    /// refused regardless of this flag.
+    #[arg(long)]
+    allow_dangerous: bool,
+    /// Scan/connect timeout in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+    /// Emit JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ReadValuesArgs {
+    /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+    #[arg(long, env = "BLE_DOCTOR_TARGET")]
+    target: Option<String>,
+    /// Scan/connect timeout in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct DfuArgs {
+    /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+    #[arg(long, env = "BLE_DOCTOR_TARGET")]
+    target: Option<String>,
+    /// Required: this writes to the device.
+    #[arg(long)]
+    allow_dangerous: bool,
+    /// Also probe the bond-sharing buttonless characteristic (8ec90004-...)
+    #[arg(long)]
+    bond_sharing: bool,
+    /// Scan/connect timeout in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+    /// Emit JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ReconArgs {
+    /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+    #[arg(long, env = "BLE_DOCTOR_TARGET")]
+    target: String,
+    /// Scan/connect timeout in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+    /// Also run the external bluesploit cross-check (heuristic, INFO-only, never scored)
+    #[arg(long)]
+    bluesploit: bool,
+    /// Emit JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct CtfArgs {
+    #[command(subcommand)]
+    action: CtfCmd,
+}
+
+#[derive(Args, Debug)]
+pub struct HandoffArgs {
+    /// A `scan --json` report file to turn into the bundle (no radio)
+    #[arg(long)]
+    report: std::path::PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct RulesArgs {
+    #[command(subcommand)]
+    action: RulesCmd,
+}
+
+#[derive(Args, Debug)]
+pub struct WhyArgs {
+    /// Rule / check id
+    id: String,
+    /// A `--json` report file to pull the matching finding from
+    #[arg(long)]
+    report: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct MitmArgs {
+    /// The real target device to relay to (address / identifier / name)
+    #[arg(long, env = "BLE_DOCTOR_TARGET")]
+    target: String,
+    /// Required: this actively intercepts GATT traffic between a victim
+    /// and the real device (scope: own hardware or written authorization only).
+    #[arg(long)]
+    allow_dangerous: bool,
 }
 
 /// `ctf` subcommands: brute-write / read-N / write-then-read against a
@@ -266,141 +270,179 @@ pub enum RulesCmd {
     },
 }
 
-impl Command {
-    /// Stub message: command name and tracking issue.
-    pub fn stub(&self) -> (&'static str, u32) {
-        match self {
-            Command::Scan { .. } => ("scan", 7),
-            Command::Analyze { .. } => ("analyze", 11),
-            Command::ProbeWrites { .. } => ("probe-writes", 8),
-            Command::Sniff { .. } => ("sniff", 19),
-            Command::Fingerprint { .. } => ("fingerprint", 18),
-            Command::ReadValues { .. } => ("read-values", 9),
-            Command::Dfu { .. } => ("dfu", 10),
-            Command::Doctor => ("doctor", 4),
-            Command::Mcp => ("mcp", 12),
-            Command::Recon { .. } => ("recon", 21),
-            Command::Ctf { .. } => ("ctf", 22),
-            Command::Baseline => ("baseline", 26),
-            Command::Handoff { .. } => ("handoff", 27),
-            Command::Rules { .. } | Command::Why { .. } => ("rules", 23),
-            Command::Mitm { .. } => ("mitm", 20),
+/// `command` for ble's own `vn` arguments: `run` gets them parsed.
+macro_rules! ext {
+    ($order:expr, $name:literal, $A:ty, $f:path) => {
+        ExtCommand {
+            command: <$A>::augment_args(clap::Command::new($name))
+                .about(about($name))
+                .display_order($order),
+            run: |bd, m| $f(bd, &<$A>::from_arg_matches(m).map_err(|e| e.to_string())?),
         }
+    };
+}
+
+fn about(name: &str) -> &'static str {
+    match name {
+        "scan" => "Scan for BLE devices",
+        "analyze" => "Analyze a capture or device",
+        "sniff" => "Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device",
+        "fingerprint" => "Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)",
+        "probe-writes" => "Probe writable characteristics (EMPIRICAL: connects without bonding and writes)",
+        "read-values" => "Read characteristic values on non-SIG services (lists length + preview only)",
+        "dfu" => "Probe DFU surface (EMPIRICAL buttonless probe: writes to the device without bonding)",
+        "doctor" => "Diagnose the local BLE environment",
+        "mcp" => "Run the MCP server",
+        "recon" => "Recon a target (native GATT inventory)",
+        "ctf" => "CTF helpers (own-gear / CTF scope only; never reachable via `mcp`)",
+        "baseline" => "Baseline snapshots",
+        "handoff" => "Export a handoff bundle",
+        "rules" => "Inspect rules",
+        "why" => "Explain a finding (rule doc, plus the finding from a report JSON)",
+        "mitm" => "GATT MITM: clone the target as a peripheral and relay+log traffic to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)",
+        _ => unreachable!("{name}"),
     }
 }
 
-/// Dispatch a parsed CLI.
-pub fn run(cli: Cli) {
-    if let Command::Mcp = &cli.command {
-        crate::mcp::serve();
-        return;
+/// The kit's report tail for a findings command. The kit prefixes `error: ` to failures it
+/// raises itself (bad baseline); ble has always printed those bare.
+fn findings(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
+    let o = OutputArgs::from_matches(m, bd);
+    let bare = |mut f: doctor_kit::ScanFailure| {
+        f.stderr = f
+            .stderr
+            .strip_prefix("error: ")
+            .unwrap_or(&f.stderr)
+            .to_string();
+        doctor_kit::output::report_failure(bd, &f)
+    };
+    let pre = match preflight(bd, &o) {
+        Ok(p) => p,
+        Err(f) => return Ok(bare(f)),
+    };
+    let ctx = Ctx::detached(Default::default(), o.fail_on);
+    Ok(kit_finish(bd, pre, bd.try_scan(&ctx), &o))
+}
+
+/// `analyze`: ble's own arguments plus the kit's presentation flags (`--theme-file` is left out:
+/// no theme file is looked up next to a capture).
+fn analyze_command() -> clap::Command {
+    let own = ["json", "sarif", "baseline", "fail_on", "theme_file"];
+    AnalyzeArgs::augment_args(clap::Command::new("analyze"))
+        .about(about("analyze"))
+        .args(
+            OutputArgs::args_with(Severity::High)
+                .into_iter()
+                .filter(|a| !own.contains(&a.get_id().as_str())),
+        )
+        // `--face` lists its values inline: a value with its own help text would turn the whole
+        // help into the long layout.
+        .mut_arg("face", |a| {
+            a.value_parser(
+                PossibleValuesParser::new(["plain", "rich", "compact"])
+                    .map(|s| <Face as clap::ValueEnum>::from_str(&s, true).expect("listed face")),
+            )
+        })
+        .display_order(1)
+}
+
+/// ble's commands, in the order `--help` has always listed them.
+pub fn extensions() -> Extensions<BleDoctor> {
+    let plain =
+        |order: usize,
+         name: &'static str,
+         run: fn(&BleDoctor, &ArgMatches) -> Result<u8, String>| ExtCommand {
+            command: clap::Command::new(name)
+                .about(about(name))
+                .display_order(order),
+            run,
+        };
+    Extensions {
+        commands: vec![
+            ext!(0, "scan", ScanArgs, scan),
+            ExtCommand {
+                command: analyze_command(),
+                run: findings,
+            },
+            ext!(2, "sniff", SniffArgs, sniff),
+            ext!(3, "fingerprint", FingerprintArgs, fingerprint),
+            ext!(4, "probe-writes", ProbeWritesArgs, probe_writes),
+            ext!(5, "read-values", ReadValuesArgs, read_values),
+            ext!(6, "dfu", DfuArgs, dfu),
+            plain(7, "doctor", |_, _| {
+                use crate::{capability::Platform, doctor};
+                let results = doctor::run_doctor(&doctor::Probes::detect(), Platform::current());
+                std::process::exit(doctor::print_report(&results))
+            }),
+            plain(8, "mcp", |_, _| {
+                crate::mcp::serve();
+                Ok(0)
+            }),
+            ext!(9, "recon", ReconArgs, recon),
+            ext!(10, "ctf", CtfArgs, ctf),
+            plain(11, "baseline", |_, _| {
+                println!("baseline: not yet implemented (#26)");
+                Ok(0)
+            }),
+            ext!(12, "handoff", HandoffArgs, handoff),
+            ext!(13, "rules", RulesArgs, rules_cmd),
+            ext!(14, "why", WhyArgs, why_cmd),
+            ext!(15, "mitm", MitmArgs, mitm),
+        ],
+        global_args: vec![Arg::new("adapter")
+            .long("adapter")
+            .value_name("ADAPTER")
+            .display_order(0)
+            .help("Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere")],
+        ..Default::default()
     }
-    if let Command::Analyze {
-        capture,
+}
+
+/// The doctor, from the parsed command line: the adapter, and the capture for `analyze`.
+fn build(m: &ArgMatches) -> Result<BleDoctor, String> {
+    let sub = m.subcommand();
+    let flag = |id: &str| {
+        sub.and_then(|(_, s)| s.try_get_one::<bool>(id).ok().flatten().copied())
+            .unwrap_or(false)
+    };
+    let adapter = sub
+        .and_then(|(_, s)| s.try_get_one::<String>("adapter").ok().flatten())
+        .or_else(|| m.try_get_one::<String>("adapter").ok().flatten())
+        .cloned();
+    let subject = match sub {
+        Some(("analyze", s)) => Subject::Capture(
+            s.get_one::<std::path::PathBuf>("capture")
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        _ => Subject::None,
+    };
+    Ok(BleDoctor::new(
+        subject,
+        adapter,
+        !flag("json") && !flag("score"),
+    ))
+}
+
+/// The whole CLI.
+pub fn run() -> ExitCode {
+    let meta = Meta::of(&BleDoctor::new(Subject::None, None, false));
+    doctor_kit::run_with(meta, extensions(), build)
+}
+
+fn scan(bd: &BleDoctor, args: &ScanArgs) -> Result<u8, String> {
+    let ScanArgs {
+        target,
+        timeout,
+        mtu,
+        as_address,
         json,
+        tui,
         sarif,
         baseline,
         fail_on,
-    } = &cli.command
-    {
-        let res = std::fs::read(capture)
-            .map_err(|e| e.to_string())
-            .and_then(|b| crate::capture::parse_capture(&b));
-        match res {
-            Ok(info) => {
-                let smp = crate::smp::analyze(&info.smp_pdus);
-                let mut checks = vec![crate::capture::check_mac_rotation(&info)];
-                checks.extend(smp.checks);
-                let loc = doctor_core::Location::new(
-                    doctor_core::LocationKind::File,
-                    capture.display().to_string(),
-                );
-                let human = format!(
-                    "capture: {} ({} adv frames)\n{}{}",
-                    crate::report::sanitize(info.capture_flavour.as_deref().unwrap_or("unknown")),
-                    info.adv_mac_addresses.len(),
-                    crate::report::to_table(&checks),
-                    smp.summary
-                        .iter()
-                        .map(|l| format!("\n{}", crate::report::sanitize(l)))
-                        .collect::<String>()
-                );
-                let extra = serde_json::json!({"capture": info, "smp": smp.data});
-                // Peripheral identity: the one address in the capture; rotating/absent -> empty.
-                let mut addrs: Vec<&String> = info.adv_mac_addresses.iter().collect();
-                addrs.sort();
-                addrs.dedup();
-                let dev = if addrs.len() == 1 {
-                    addrs[0].as_str()
-                } else {
-                    ""
-                };
-                let code = emit(
-                    &checks,
-                    &loc,
-                    dev,
-                    extra,
-                    *json,
-                    sarif,
-                    baseline,
-                    fail_on,
-                    Some(&human),
-                );
-                if code != 0 {
-                    std::process::exit(code);
-                }
-            }
-            Err(e) => {
-                eprintln!("analyze: {}", crate::report::sanitize(&e));
-                fail();
-            }
-        }
-        return;
-    }
-    if let Command::Sniff {
-        device,
-        from_file,
-        json,
-    } = &cli.command
-    {
-        let res = match (from_file, device) {
-            (Some(f), _) => std::fs::read_to_string(f)
-                .map(|t| crate::sniffer::parse_sniffle(&t))
-                .map_err(|e| format!("{}: {e}", f.display())),
-            (None, Some(d)) => crate::sniffer::drive_sniffer(d)
-                .map_err(|e| format!("{e}\n  fix: {}", e.remediation())),
-            (None, None) => Err("pass --device <port> or --from-file <dump>".into()),
-        };
-        match res {
-            Ok(info) => {
-                let r = crate::capture::check_mac_rotation(&info);
-                if *json {
-                    let v = serde_json::json!({"capture": info, "checks": [r]});
-                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
-                } else {
-                    println!("sniffer: {} adv frames", info.adv_mac_addresses.len());
-                    let tag = if r.passed { "PASS" } else { "FAIL" };
-                    println!(
-                        "[{tag}] {:?} {}: {}",
-                        r.severity,
-                        san(&r.id),
-                        san(&r.detail)
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("sniff: {e}");
-                fail();
-            }
-        }
-        return;
-    }
-    if let Command::Scan {
-        target: Some(t),
-        as_address: Some(a),
-        ..
-    } = &cli.command
-    {
+    } = args;
+    if let (Some(t), Some(a)) = (target, as_address) {
         let res = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
                 .block_on(crate::radio::raw::set_random_address_and_connect(a, t))
@@ -412,14 +454,9 @@ pub fn run(cli: Cli) {
                 fail();
             }
         }
-        return;
+        return Ok(0);
     }
-    if let Command::Scan {
-        target: Some(t),
-        mtu: Some(m),
-        ..
-    } = &cli.command
-    {
+    if let (Some(t), Some(m)) = (target, mtu) {
         let res = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(crate::radio::raw::request_exact_mtu(t, *m))
         });
@@ -430,131 +467,87 @@ pub fn run(cli: Cli) {
                 fail();
             }
         }
-        return;
+        return Ok(0);
     }
-    if let Command::Scan {
-        target,
-        timeout,
-        json,
-        tui,
-        sarif,
-        baseline,
-        fail_on,
-        ..
-    } = &cli.command
-    {
-        use crate::radio::{select_target_device, BtleplugCentral, Central};
-        let dur = std::time::Duration::from_secs(*timeout);
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(BtleplugCentral.scan(dur))
-        });
-        match res {
-            Ok(devs) => {
-                // --json: stdout carries only the envelope, so the device list goes to stderr.
-                for d in &devs {
-                    let line = format!(
-                        "{}  addr={} name={} adv={} rssi={}",
-                        crate::report::sanitize(&d.id),
-                        d.address.as_deref().unwrap_or("-"),
-                        crate::report::sanitize(d.name.as_deref().unwrap_or("-")),
-                        crate::report::sanitize(d.adv_local_name.as_deref().unwrap_or("-")),
-                        d.rssi.map_or("-".into(), |r| r.to_string())
-                    );
-                    if *json {
-                        eprintln!("{line}");
-                    } else {
-                        println!("{line}");
-                    }
+    use crate::radio::{select_target_device, BtleplugCentral, Central};
+    let dur = std::time::Duration::from_secs(*timeout);
+    let res = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(BtleplugCentral.scan(dur))
+    });
+    match res {
+        Ok(devs) => {
+            // --json: stdout carries only the envelope, so the device list goes to stderr.
+            for d in &devs {
+                let line = format!(
+                    "{}  addr={} name={} adv={} rssi={}",
+                    crate::report::sanitize(&d.id),
+                    d.address.as_deref().unwrap_or("-"),
+                    crate::report::sanitize(d.name.as_deref().unwrap_or("-")),
+                    crate::report::sanitize(d.adv_local_name.as_deref().unwrap_or("-")),
+                    d.rssi.map_or("-".into(), |r| r.to_string())
+                );
+                if *json {
+                    eprintln!("{line}");
+                } else {
+                    println!("{line}");
                 }
-                if let Some(t) = target {
-                    match select_target_device(&devs, t) {
-                        Ok(d) => {
-                            if !*json {
-                                println!("selected: {}", crate::report::sanitize(&d.id));
-                            }
-                            let id = d.id.clone();
-                            let dev = d.clone();
-                            let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                            let gi = tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current().block_on(async {
-                                    use crate::radio::{connect_client, GattClient};
-                                    let c =
-                                        connect_client(cli.adapter.as_deref(), &dev, dur).await?;
-                                    let s = c.services().await?;
-                                    Ok::<_, crate::error::BleError>(
-                                        crate::gatt::extract_gatt_fields(&s, &id, name.as_deref()),
-                                    )
-                                })
-                            });
-                            match gi {
-                                Ok(g) => {
-                                    let checks = [
-                                        crate::checks::check_unauthenticated_writes(&g),
-                                        crate::checks::check_dfu_entry_point(&g),
-                                        crate::checks::check_dfu_signing_enforced(&g),
-                                        crate::checks::check_dfu_surface_absent(&g),
-                                    ];
-                                    let loc = doctor_core::Location::new(
-                                        doctor_core::LocationKind::Device,
-                                        t.as_str(),
+            }
+            if let Some(t) = target {
+                match select_target_device(&devs, t) {
+                    Ok(d) => {
+                        if !*json {
+                            println!("selected: {}", crate::report::sanitize(&d.id));
+                        }
+                        let id = d.id.clone();
+                        let dev = d.clone();
+                        let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+                        let gi = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(async {
+                                use crate::radio::{connect_client, GattClient};
+                                let c = connect_client(bd.adapter.as_deref(), &dev, dur).await?;
+                                let s = c.services().await?;
+                                Ok::<_, crate::error::BleError>(crate::gatt::extract_gatt_fields(
+                                    &s,
+                                    &id,
+                                    name.as_deref(),
+                                ))
+                            })
+                        });
+                        match gi {
+                            Ok(g) => {
+                                let checks = [
+                                    crate::checks::check_unauthenticated_writes(&g),
+                                    crate::checks::check_dfu_entry_point(&g),
+                                    crate::checks::check_dfu_signing_enforced(&g),
+                                    crate::checks::check_dfu_surface_absent(&g),
+                                ];
+                                let loc = doctor_core::Location::new(
+                                    doctor_core::LocationKind::Device,
+                                    t.as_str(),
+                                );
+                                if *json {
+                                    let code = emit(
+                                        &checks,
+                                        &loc,
+                                        t,
+                                        serde_json::json!({}),
+                                        true,
+                                        sarif,
+                                        baseline,
+                                        fail_on,
+                                        None,
                                     );
-                                    if *json {
-                                        let code = emit(
-                                            &checks,
-                                            &loc,
-                                            t,
-                                            serde_json::json!({}),
-                                            true,
-                                            sarif,
-                                            baseline,
-                                            fail_on,
-                                            None,
-                                        );
-                                        if code != 0 {
-                                            std::process::exit(code);
-                                        }
-                                        return;
+                                    if code != 0 {
+                                        std::process::exit(code);
                                     }
-                                    if *tui {
-                                        let score = crate::report::compute_score(&checks);
-                                        if let Err(e) = crate::tui::run_tui(score, &checks) {
-                                            eprintln!("tui: {e}");
-                                            fail();
-                                        }
-                                        let code = emit(
-                                            &checks,
-                                            &loc,
-                                            t,
-                                            serde_json::json!({}),
-                                            false,
-                                            sarif,
-                                            baseline,
-                                            fail_on,
-                                            None,
-                                        );
-                                        if code != 0 {
-                                            std::process::exit(code);
-                                        }
-                                        return;
+                                    return Ok(0);
+                                }
+                                if *tui {
+                                    let score = crate::report::compute_score(&checks);
+                                    if let Err(e) = crate::tui::run_tui(score, &checks) {
+                                        eprintln!("tui: {e}");
+                                        fail();
                                     }
-                                    println!(
-                                        "gatt: {} services, {} writable, {} subscribable",
-                                        g.service_uuids.len(),
-                                        g.writable_chars.len(),
-                                        g.subscribe_chars.len()
-                                    );
-                                    for w in &g.writable_chars {
-                                        println!(
-                                            "  write {} requires_bonding={} ({})",
-                                            san(&w.uuid),
-                                            w.requires_bonding,
-                                            san(&w.bonding_basis)
-                                        );
-                                    }
-                                    for s in &g.subscribe_chars {
-                                        println!("  notify {} cccd={:?}", san(&s.uuid), s.cccd);
-                                    }
-                                    let human = format!("\n{}", crate::report::to_table(&checks));
                                     let code = emit(
                                         &checks,
                                         &loc,
@@ -564,548 +557,631 @@ pub fn run(cli: Cli) {
                                         sarif,
                                         baseline,
                                         fail_on,
-                                        Some(&human),
+                                        None,
                                     );
                                     if code != 0 {
                                         std::process::exit(code);
                                     }
+                                    return Ok(0);
                                 }
-                                Err(e) => {
-                                    eprintln!("gatt: {e}\n  fix: {}", e.remediation());
-                                    fail();
+                                println!(
+                                    "gatt: {} services, {} writable, {} subscribable",
+                                    g.service_uuids.len(),
+                                    g.writable_chars.len(),
+                                    g.subscribe_chars.len()
+                                );
+                                for w in &g.writable_chars {
+                                    println!(
+                                        "  write {} requires_bonding={} ({})",
+                                        san(&w.uuid),
+                                        w.requires_bonding,
+                                        san(&w.bonding_basis)
+                                    );
+                                }
+                                for s in &g.subscribe_chars {
+                                    println!("  notify {} cccd={:?}", san(&s.uuid), s.cccd);
+                                }
+                                let human = format!("\n{}", crate::report::to_table(&checks));
+                                let code = emit(
+                                    &checks,
+                                    &loc,
+                                    t,
+                                    serde_json::json!({}),
+                                    false,
+                                    sarif,
+                                    baseline,
+                                    fail_on,
+                                    Some(&human),
+                                );
+                                if code != 0 {
+                                    std::process::exit(code);
                                 }
                             }
+                            Err(e) => {
+                                eprintln!("gatt: {e}\n  fix: {}", e.remediation());
+                                fail();
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("scan: {e}");
-                            fail();
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!("scan: {e}");
+                        fail();
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("scan: {e}\n  fix: {}", e.remediation());
-                fail();
+        }
+        Err(e) => {
+            eprintln!("scan: {e}\n  fix: {}", e.remediation());
+            fail();
+        }
+    }
+    Ok(0)
+}
+
+fn sniff(_: &BleDoctor, args: &SniffArgs) -> Result<u8, String> {
+    let SniffArgs {
+        device,
+        from_file,
+        json,
+    } = args;
+    let res = match (from_file, device) {
+        (Some(f), _) => std::fs::read_to_string(f)
+            .map(|t| crate::sniffer::parse_sniffle(&t))
+            .map_err(|e| format!("{}: {e}", f.display())),
+        (None, Some(d)) => {
+            crate::sniffer::drive_sniffer(d).map_err(|e| format!("{e}\n  fix: {}", e.remediation()))
+        }
+        (None, None) => Err("pass --device <port> or --from-file <dump>".into()),
+    };
+    match res {
+        Ok(info) => {
+            let r = crate::capture::check_mac_rotation(&info);
+            if *json {
+                let v = serde_json::json!({"capture": info, "checks": [r]});
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            } else {
+                println!("sniffer: {} adv frames", info.adv_mac_addresses.len());
+                let tag = if r.passed { "PASS" } else { "FAIL" };
+                println!(
+                    "[{tag}] {:?} {}: {}",
+                    r.severity,
+                    san(&r.id),
+                    san(&r.detail)
+                );
             }
         }
-        return;
+        Err(e) => {
+            eprintln!("sniff: {e}");
+            fail();
+        }
     }
-    if let Command::Recon {
+    Ok(0)
+}
+
+fn recon(bd: &BleDoctor, args: &ReconArgs) -> Result<u8, String> {
+    let ReconArgs {
         target,
         timeout,
         bluesploit,
         json,
-    } = &cli.command
-    {
-        use crate::radio::{
-            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
-        };
-        let dur = std::time::Duration::from_secs(*timeout);
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let devs = BtleplugCentral.scan(dur).await?;
-                let d = select_target_device(&devs, target)?.clone();
-                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                let s = c.services().await?;
-                Ok::<_, crate::error::BleError>(crate::gatt::extract_gatt_fields(
-                    &s,
-                    &d.id,
-                    name.as_deref(),
-                ))
-            })
-        });
-        let gi = match res {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("recon: {e}\n  fix: {}", e.remediation());
-                fail();
-            }
-        };
-        let inv = crate::recon::inventory(&gi);
-        let bs = bluesploit.then(crate::recon::bluesploit_recon);
-        if *json {
-            let v = serde_json::json!({"inventory": inv, "bluesploit_crosscheck": bs});
-            println!("{}", serde_json::to_string_pretty(&v).unwrap());
-        } else {
-            print!("{}", crate::recon::render(&inv));
-            if let Some(b) = bs {
-                println!(
-                    "\nbluesploit cross-check (EXTERNAL, HEURISTIC scrape, INFO only, not scored):"
-                );
-                println!("{}", serde_json::to_string_pretty(&b).unwrap());
-            }
+    } = args;
+    use crate::radio::{
+        connect_client, select_target_device, BtleplugCentral, Central, GattClient,
+    };
+    let dur = std::time::Duration::from_secs(*timeout);
+    let res = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let devs = BtleplugCentral.scan(dur).await?;
+            let d = select_target_device(&devs, target)?.clone();
+            let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+            let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+            let s = c.services().await?;
+            Ok::<_, crate::error::BleError>(crate::gatt::extract_gatt_fields(
+                &s,
+                &d.id,
+                name.as_deref(),
+            ))
+        })
+    });
+    let gi = match res {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("recon: {e}\n  fix: {}", e.remediation());
+            fail();
         }
-        return;
+    };
+    let inv = crate::recon::inventory(&gi);
+    let bs = bluesploit.then(crate::recon::bluesploit_recon);
+    if *json {
+        let v = serde_json::json!({"inventory": inv, "bluesploit_crosscheck": bs});
+        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+    } else {
+        print!("{}", crate::recon::render(&inv));
+        if let Some(b) = bs {
+            println!(
+                "\nbluesploit cross-check (EXTERNAL, HEURISTIC scrape, INFO only, not scored):"
+            );
+            println!("{}", serde_json::to_string_pretty(&b).unwrap());
+        }
     }
-    if let Command::ProbeWrites {
+    Ok(0)
+}
+
+fn probe_writes(bd: &BleDoctor, args: &ProbeWritesArgs) -> Result<u8, String> {
+    let ProbeWritesArgs {
         target,
         allow_dangerous,
         timeout,
         json,
-    } = &cli.command
-    {
-        if !allow_dangerous {
-            eprintln!(
-                "probe-writes: refused. This EMPIRICALLY writes to the device without \
-                 bonding (scope: own hardware or written authorization only). Pass \
-                 --allow-dangerous to proceed; firmware/DFU characteristics are still \
-                 refused regardless."
-            );
-            fail();
-        }
-        let Some(target) = target else {
-            eprintln!("probe-writes: --target is required");
-            fail();
-        };
-        use crate::radio::{
-            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
-        };
-        let dur = std::time::Duration::from_secs(*timeout);
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let devs = BtleplugCentral.scan(dur).await?;
-                let d = select_target_device(&devs, target)?.clone();
-                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                let s = c.services().await?;
-                let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
-                let results =
-                    crate::probe::write::probe_write_access(&c, &gi.writable_chars, true).await;
-                Ok::<_, crate::error::BleError>((gi, results))
-            })
-        });
-        match res {
-            Ok((mut gi, results)) => {
-                gi.writable_chars = crate::probe::write::results_to_writable_chars(&results);
-                let finding = crate::checks::check_unauthenticated_writes(&gi);
-                if *json {
-                    let v = serde_json::json!({
-                        "results": results.iter().map(|r| serde_json::json!({
-                            "uuid": r.uuid,
-                            "service_uuid": r.service_uuid,
-                            "outcome": format!("{:?}", r.outcome),
-                            "requires_bonding": r.requires_bonding,
-                        })).collect::<Vec<_>>(),
-                        "finding": finding,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
-                } else {
-                    for r in &results {
-                        println!(
-                            "  {} ({}) -> {:?} requires_bonding={:?}",
-                            san(&r.uuid),
-                            san(&r.service_uuid),
-                            r.outcome,
-                            r.requires_bonding
-                        );
-                    }
-                    let tag = if finding.passed { "PASS" } else { "FAIL" };
+    } = args;
+    if !allow_dangerous {
+        eprintln!(
+            "probe-writes: refused. This EMPIRICALLY writes to the device without \
+             bonding (scope: own hardware or written authorization only). Pass \
+             --allow-dangerous to proceed; firmware/DFU characteristics are still \
+             refused regardless."
+        );
+        fail();
+    }
+    let Some(target) = target else {
+        eprintln!("probe-writes: --target is required");
+        fail();
+    };
+    use crate::radio::{
+        connect_client, select_target_device, BtleplugCentral, Central, GattClient,
+    };
+    let dur = std::time::Duration::from_secs(*timeout);
+    let res = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let devs = BtleplugCentral.scan(dur).await?;
+            let d = select_target_device(&devs, target)?.clone();
+            let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+            let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+            let s = c.services().await?;
+            let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
+            let results =
+                crate::probe::write::probe_write_access(&c, &gi.writable_chars, true).await;
+            Ok::<_, crate::error::BleError>((gi, results))
+        })
+    });
+    match res {
+        Ok((mut gi, results)) => {
+            gi.writable_chars = crate::probe::write::results_to_writable_chars(&results);
+            let finding = crate::checks::check_unauthenticated_writes(&gi);
+            if *json {
+                let v = serde_json::json!({
+                    "results": results.iter().map(|r| serde_json::json!({
+                        "uuid": r.uuid,
+                        "service_uuid": r.service_uuid,
+                        "outcome": format!("{:?}", r.outcome),
+                        "requires_bonding": r.requires_bonding,
+                    })).collect::<Vec<_>>(),
+                    "finding": finding,
+                });
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            } else {
+                for r in &results {
                     println!(
-                        "[{tag}] {:?} {}: {}",
-                        finding.severity,
-                        san(&finding.id),
-                        san(&finding.detail)
+                        "  {} ({}) -> {:?} requires_bonding={:?}",
+                        san(&r.uuid),
+                        san(&r.service_uuid),
+                        r.outcome,
+                        r.requires_bonding
                     );
                 }
-            }
-            Err(e) => {
-                eprintln!("probe-writes: {e}\n  fix: {}", e.remediation());
-                fail();
+                let tag = if finding.passed { "PASS" } else { "FAIL" };
+                println!(
+                    "[{tag}] {:?} {}: {}",
+                    finding.severity,
+                    san(&finding.id),
+                    san(&finding.detail)
+                );
             }
         }
-        return;
+        Err(e) => {
+            eprintln!("probe-writes: {e}\n  fix: {}", e.remediation());
+            fail();
+        }
     }
-    if let Command::Fingerprint {
+    Ok(0)
+}
+
+fn fingerprint(bd: &BleDoctor, args: &FingerprintArgs) -> Result<u8, String> {
+    let FingerprintArgs {
         target,
         timeout,
         json,
-    } = &cli.command
-    {
-        let Some(target) = target else {
-            eprintln!("fingerprint: --target is required");
-            fail();
-        };
-        use crate::radio::{
-            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
-        };
-        let dur = std::time::Duration::from_secs(*timeout);
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let devs = BtleplugCentral.scan(dur).await?;
-                let d = select_target_device(&devs, target)?.clone();
-                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                let g =
-                    crate::gatt::extract_gatt_fields(&c.services().await?, &d.id, name.as_deref());
-                let mut f = crate::fingerprint::le_gatt_fingerprint(&g);
-                match crate::fingerprint::collect_br_edr(d.address.as_deref().unwrap_or(target))
-                    .await
-                {
-                    Ok((sdp, lmp, notes)) => {
-                        f.sdp = sdp;
-                        f.lmp = lmp;
-                        f.notes.extend(notes);
-                    }
-                    Err(crate::error::BleError::Unsupported { .. }) => {
-                        f.notes.push(crate::fingerprint::NOTE_NEEDS_LINUX.into())
-                    }
-                    Err(e) => f.notes.push(format!("SDP/LMP failed: {e}")),
+    } = args;
+    let Some(target) = target else {
+        eprintln!("fingerprint: --target is required");
+        fail();
+    };
+    use crate::radio::{
+        connect_client, select_target_device, BtleplugCentral, Central, GattClient,
+    };
+    let dur = std::time::Duration::from_secs(*timeout);
+    let res = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let devs = BtleplugCentral.scan(dur).await?;
+            let d = select_target_device(&devs, target)?.clone();
+            let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+            let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+            let g = crate::gatt::extract_gatt_fields(&c.services().await?, &d.id, name.as_deref());
+            let mut f = crate::fingerprint::le_gatt_fingerprint(&g);
+            match crate::fingerprint::collect_br_edr(d.address.as_deref().unwrap_or(target)).await {
+                Ok((sdp, lmp, notes)) => {
+                    f.sdp = sdp;
+                    f.lmp = lmp;
+                    f.notes.extend(notes);
                 }
-                Ok::<_, crate::error::BleError>(f)
-            })
-        });
-        match res {
-            Ok(f) if *json => println!("{}", serde_json::to_string_pretty(&f).expect("serialize")),
-            Ok(f) => {
-                println!(
-                    "{} name={}",
-                    san(&f.address),
-                    san(f.name.as_deref().unwrap_or("-"))
-                );
-                println!(
-                    "services={} chars={} writable={} notify={} pairing={}",
-                    f.service_uuids.len(),
-                    f.char_count,
-                    f.writable_count,
-                    f.notify_count,
-                    f.pairing_method
-                );
-                for u in &f.service_uuids {
-                    println!("  service {}", san(u));
+                Err(crate::error::BleError::Unsupported { .. }) => {
+                    f.notes.push(crate::fingerprint::NOTE_NEEDS_LINUX.into())
                 }
-                for n in &f.notable_chars {
-                    println!("  {}", san(n));
-                }
-                if let Some(s) = &f.sdp {
-                    for r in &s.records {
-                        println!(
-                            "  sdp {:?} {}",
-                            r.service_classes,
-                            san(r.name.as_deref().unwrap_or(""))
-                        );
-                    }
-                }
-                if let Some(l) = &f.lmp {
+                Err(e) => f.notes.push(format!("SDP/LMP failed: {e}")),
+            }
+            Ok::<_, crate::error::BleError>(f)
+        })
+    });
+    match res {
+        Ok(f) if *json => println!("{}", serde_json::to_string_pretty(&f).expect("serialize")),
+        Ok(f) => {
+            println!(
+                "{} name={}",
+                san(&f.address),
+                san(f.name.as_deref().unwrap_or("-"))
+            );
+            println!(
+                "services={} chars={} writable={} notify={} pairing={}",
+                f.service_uuids.len(),
+                f.char_count,
+                f.writable_count,
+                f.notify_count,
+                f.pairing_method
+            );
+            for u in &f.service_uuids {
+                println!("  service {}", san(u));
+            }
+            for n in &f.notable_chars {
+                println!("  {}", san(n));
+            }
+            if let Some(s) = &f.sdp {
+                for r in &s.records {
                     println!(
-                        "  lmp {} (v{}) mfr={} (0x{:04x}) subversion=0x{:04x}",
-                        l.version,
-                        l.lmp_version,
-                        l.manufacturer_name.as_deref().unwrap_or("unknown"),
-                        l.manufacturer,
-                        l.subversion
+                        "  sdp {:?} {}",
+                        r.service_classes,
+                        san(r.name.as_deref().unwrap_or(""))
                     );
-                    println!("  lmp features: {}", l.features.join(", "));
-                }
-                for n in &f.notes {
-                    println!("  note: {}", san(n));
                 }
             }
-            Err(e) => {
-                eprintln!("fingerprint: {e}\n  fix: {}", e.remediation());
-                fail();
+            if let Some(l) = &f.lmp {
+                println!(
+                    "  lmp {} (v{}) mfr={} (0x{:04x}) subversion=0x{:04x}",
+                    l.version,
+                    l.lmp_version,
+                    l.manufacturer_name.as_deref().unwrap_or("unknown"),
+                    l.manufacturer,
+                    l.subversion
+                );
+                println!("  lmp features: {}", l.features.join(", "));
+            }
+            for n in &f.notes {
+                println!("  note: {}", san(n));
             }
         }
-        return;
-    }
-    if let Command::ReadValues { target, timeout } = &cli.command {
-        let Some(target) = target else {
-            eprintln!("read-values: --target is required");
+        Err(e) => {
+            eprintln!("fingerprint: {e}\n  fix: {}", e.remediation());
             fail();
-        };
-        eprintln!(
-            "read-values: reading can change device state (scope: own hardware or written \
-             authorization only). SIG services and firmware/DFU characteristics are skipped."
-        );
-        use crate::radio::{
-            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
-        };
-        let dur = std::time::Duration::from_secs(*timeout);
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let devs = BtleplugCentral.scan(dur).await?;
-                let d = select_target_device(&devs, target)?.clone();
-                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                let chars = crate::probe::read::read_chars(&c.services().await?);
-                Ok::<_, crate::error::BleError>(crate::probe::read::read_values(&c, &chars).await)
-            })
-        });
-        match res {
-            Ok(results) => {
-                use crate::probe::read::ReadOutcome::*;
-                for r in &results {
-                    match &r.outcome {
-                        Value { len, preview } => {
-                            println!(
-                                "  {} ({}) len={len} \"{}\"",
-                                san(&r.uuid),
-                                san(&r.service_uuid),
-                                san(preview)
-                            )
-                        }
-                        Skipped(why) => println!("  {} skipped: {}", san(&r.uuid), san(why)),
-                        Error(e) => {
-                            println!("  {} read error: {}", san(&r.uuid), san(&e.to_string()))
-                        }
+        }
+    }
+    Ok(0)
+}
+
+fn read_values(bd: &BleDoctor, args: &ReadValuesArgs) -> Result<u8, String> {
+    let ReadValuesArgs { target, timeout } = args;
+    let Some(target) = target else {
+        eprintln!("read-values: --target is required");
+        fail();
+    };
+    eprintln!(
+        "read-values: reading can change device state (scope: own hardware or written \
+         authorization only). SIG services and firmware/DFU characteristics are skipped."
+    );
+    use crate::radio::{
+        connect_client, select_target_device, BtleplugCentral, Central, GattClient,
+    };
+    let dur = std::time::Duration::from_secs(*timeout);
+    let res = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let devs = BtleplugCentral.scan(dur).await?;
+            let d = select_target_device(&devs, target)?.clone();
+            let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+            let chars = crate::probe::read::read_chars(&c.services().await?);
+            Ok::<_, crate::error::BleError>(crate::probe::read::read_values(&c, &chars).await)
+        })
+    });
+    match res {
+        Ok(results) => {
+            use crate::probe::read::ReadOutcome::*;
+            for r in &results {
+                match &r.outcome {
+                    Value { len, preview } => {
+                        println!(
+                            "  {} ({}) len={len} \"{}\"",
+                            san(&r.uuid),
+                            san(&r.service_uuid),
+                            san(preview)
+                        )
+                    }
+                    Skipped(why) => println!("  {} skipped: {}", san(&r.uuid), san(why)),
+                    Error(e) => {
+                        println!("  {} read error: {}", san(&r.uuid), san(&e.to_string()))
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("read-values: {e}\n  fix: {}", e.remediation());
-                fail();
-            }
         }
-        return;
+        Err(e) => {
+            eprintln!("read-values: {e}\n  fix: {}", e.remediation());
+            fail();
+        }
     }
-    if let Command::Dfu {
+    Ok(0)
+}
+
+fn dfu(bd: &BleDoctor, args: &DfuArgs) -> Result<u8, String> {
+    let DfuArgs {
         target,
         allow_dangerous,
         bond_sharing,
         timeout,
         json,
-    } = &cli.command
-    {
-        if !allow_dangerous {
-            eprintln!(
-                "dfu: refused. This EMPIRICALLY writes to the buttonless-DFU characteristic \
-                 without bonding (scope: own hardware or written authorization only). Pass \
-                 --allow-dangerous to proceed."
-            );
-            fail();
-        }
-        let Some(target) = target else {
-            eprintln!("dfu: --target is required");
-            fail();
-        };
-        use crate::radio::{
-            connect_client, select_target_device, BtleplugCentral, Central, GattClient,
-        };
-        let dur = std::time::Duration::from_secs(*timeout);
-        let bond_sharing = *bond_sharing;
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let devs = BtleplugCentral.scan(dur).await?;
-                let d = select_target_device(&devs, target)?.clone();
-                let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                let s = c.services().await?;
-                let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
-                let buttonless = crate::probe::dfu::probe_buttonless(&c, bond_sharing).await;
-                Ok::<_, crate::error::BleError>((gi, buttonless))
-            })
-        });
-        match res {
-            Ok((gi, buttonless)) => {
-                let entry_point = crate::checks::check_dfu_entry_point(&gi);
-                let surface_absent = crate::checks::check_dfu_surface_absent(&gi);
-                if *json {
-                    let v = serde_json::json!({
-                        "buttonless": {
-                            "uuid": buttonless.uuid,
-                            "outcome": format!("{:?}", buttonless.outcome),
-                            "triggerable_unbonded": buttonless.triggerable_unbonded,
-                        },
-                        "dfu_entry_point": entry_point,
-                        "dfu_surface_absent": surface_absent,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
-                } else {
-                    println!(
-                        "buttonless {} -> {:?} triggerable_unbonded={}",
-                        san(&buttonless.uuid),
-                        buttonless.outcome,
-                        buttonless.triggerable_unbonded
-                    );
-                    for r in [&entry_point, &surface_absent] {
-                        let tag = if r.passed { "PASS" } else { "FAIL" };
-                        println!(
-                            "[{tag}] {:?} {}: {}",
-                            r.severity,
-                            san(&r.id),
-                            san(&r.detail)
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("dfu: {e}\n  fix: {}", e.remediation());
-                fail();
-            }
-        }
-        return;
-    }
-    if let Command::Ctf { action } = &cli.command {
+    } = args;
+    if !allow_dangerous {
         eprintln!(
-            "ctf: own-gear / CTF scope only (own hardware or a device you are authorized to test, \
-             e.g. hackgnar/ble_ctf). This writes to the device."
+            "dfu: refused. This EMPIRICALLY writes to the buttonless-DFU characteristic \
+             without bonding (scope: own hardware or written authorization only). Pass \
+             --allow-dangerous to proceed."
         );
-        use crate::radio::{connect_client, select_target_device, BtleplugCentral, Central};
-        match action {
-            CtfCmd::Brute {
-                target,
-                char_uuid,
-                read_uuid,
-                contains,
-                timeout,
-            } => {
-                let dur = std::time::Duration::from_secs(*timeout);
-                let res = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let devs = BtleplugCentral.scan(dur).await?;
-                        let d = select_target_device(&devs, target)?.clone();
-                        let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                        Ok::<_, crate::error::BleError>(
-                            crate::ctf::brute_write(&c, char_uuid, read_uuid, |v| {
-                                String::from_utf8_lossy(v).contains(contains.as_str())
-                            })
-                            .await,
-                        )
-                    })
+        fail();
+    }
+    let Some(target) = target else {
+        eprintln!("dfu: --target is required");
+        fail();
+    };
+    use crate::radio::{
+        connect_client, select_target_device, BtleplugCentral, Central, GattClient,
+    };
+    let dur = std::time::Duration::from_secs(*timeout);
+    let bond_sharing = *bond_sharing;
+    let res = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let devs = BtleplugCentral.scan(dur).await?;
+            let d = select_target_device(&devs, target)?.clone();
+            let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+            let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+            let s = c.services().await?;
+            let gi = crate::gatt::extract_gatt_fields(&s, &d.id, name.as_deref());
+            let buttonless = crate::probe::dfu::probe_buttonless(&c, bond_sharing).await;
+            Ok::<_, crate::error::BleError>((gi, buttonless))
+        })
+    });
+    match res {
+        Ok((gi, buttonless)) => {
+            let entry_point = crate::checks::check_dfu_entry_point(&gi);
+            let surface_absent = crate::checks::check_dfu_surface_absent(&gi);
+            if *json {
+                let v = serde_json::json!({
+                    "buttonless": {
+                        "uuid": buttonless.uuid,
+                        "outcome": format!("{:?}", buttonless.outcome),
+                        "triggerable_unbonded": buttonless.triggerable_unbonded,
+                    },
+                    "dfu_entry_point": entry_point,
+                    "dfu_surface_absent": surface_absent,
                 });
-                match res {
-                    Ok(Some((byte, value))) => println!(
-                        "found byte 0x{byte:02x} -> {:?} ({})",
-                        value,
-                        san(&String::from_utf8_lossy(&value))
-                    ),
-                    Ok(None) => {
-                        println!("brute: exhausted 0x00..=0xff without a match");
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("ctf brute: {e}\n  fix: {}", e.remediation());
-                        fail();
-                    }
-                }
-            }
-            CtfCmd::ReadN {
-                target,
-                char_uuid,
-                n,
-                timeout,
-            } => {
-                let dur = std::time::Duration::from_secs(*timeout);
-                let n = *n;
-                let res = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let devs = BtleplugCentral.scan(dur).await?;
-                        let d = select_target_device(&devs, target)?.clone();
-                        let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                        Ok::<_, crate::error::BleError>(crate::ctf::read_n(&c, char_uuid, n).await)
-                    })
-                });
-                match res {
-                    Ok(values) => {
-                        for (i, v) in values.iter().enumerate() {
-                            println!("read {i}: {v:?} ({})", san(&String::from_utf8_lossy(v)));
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("ctf read-n: {e}\n  fix: {}", e.remediation());
-                        fail();
-                    }
-                }
-            }
-            CtfCmd::WriteThenRead {
-                target,
-                char_uuid,
-                data,
-                read_uuid,
-                timeout,
-            } => {
-                let data = match hex_decode(data) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("ctf write-then-read: {e}");
-                        fail();
-                    }
-                };
-                let dur = std::time::Duration::from_secs(*timeout);
-                let res = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let devs = BtleplugCentral.scan(dur).await?;
-                        let d = select_target_device(&devs, target)?.clone();
-                        let c = connect_client(cli.adapter.as_deref(), &d, dur).await?;
-                        crate::ctf::write_then_read(&c, char_uuid, &data, read_uuid).await
-                    })
-                });
-                match res {
-                    Ok(v) => println!("{v:?} ({})", san(&String::from_utf8_lossy(&v))),
-                    Err(e) => {
-                        eprintln!("ctf write-then-read: {e}\n  fix: {}", e.remediation());
-                        fail();
-                    }
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            } else {
+                println!(
+                    "buttonless {} -> {:?} triggerable_unbonded={}",
+                    san(&buttonless.uuid),
+                    buttonless.outcome,
+                    buttonless.triggerable_unbonded
+                );
+                for r in [&entry_point, &surface_absent] {
+                    let tag = if r.passed { "PASS" } else { "FAIL" };
+                    println!(
+                        "[{tag}] {:?} {}: {}",
+                        r.severity,
+                        san(&r.id),
+                        san(&r.detail)
+                    );
                 }
             }
         }
-        return;
+        Err(e) => {
+            eprintln!("dfu: {e}\n  fix: {}", e.remediation());
+            fail();
+        }
     }
-    if let Command::Mitm {
+    Ok(0)
+}
+
+fn ctf(bd: &BleDoctor, args: &CtfArgs) -> Result<u8, String> {
+    let CtfArgs { action } = args;
+    eprintln!(
+        "ctf: own-gear / CTF scope only (own hardware or a device you are authorized to test, \
+         e.g. hackgnar/ble_ctf). This writes to the device."
+    );
+    use crate::radio::{connect_client, select_target_device, BtleplugCentral, Central};
+    match action {
+        CtfCmd::Brute {
+            target,
+            char_uuid,
+            read_uuid,
+            contains,
+            timeout,
+        } => {
+            let dur = std::time::Duration::from_secs(*timeout);
+            let res = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let devs = BtleplugCentral.scan(dur).await?;
+                    let d = select_target_device(&devs, target)?.clone();
+                    let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+                    Ok::<_, crate::error::BleError>(
+                        crate::ctf::brute_write(&c, char_uuid, read_uuid, |v| {
+                            String::from_utf8_lossy(v).contains(contains.as_str())
+                        })
+                        .await,
+                    )
+                })
+            });
+            match res {
+                Ok(Some((byte, value))) => println!(
+                    "found byte 0x{byte:02x} -> {:?} ({})",
+                    value,
+                    san(&String::from_utf8_lossy(&value))
+                ),
+                Ok(None) => {
+                    println!("brute: exhausted 0x00..=0xff without a match");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("ctf brute: {e}\n  fix: {}", e.remediation());
+                    fail();
+                }
+            }
+        }
+        CtfCmd::ReadN {
+            target,
+            char_uuid,
+            n,
+            timeout,
+        } => {
+            let dur = std::time::Duration::from_secs(*timeout);
+            let n = *n;
+            let res = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let devs = BtleplugCentral.scan(dur).await?;
+                    let d = select_target_device(&devs, target)?.clone();
+                    let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+                    Ok::<_, crate::error::BleError>(crate::ctf::read_n(&c, char_uuid, n).await)
+                })
+            });
+            match res {
+                Ok(values) => {
+                    for (i, v) in values.iter().enumerate() {
+                        println!("read {i}: {v:?} ({})", san(&String::from_utf8_lossy(v)));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("ctf read-n: {e}\n  fix: {}", e.remediation());
+                    fail();
+                }
+            }
+        }
+        CtfCmd::WriteThenRead {
+            target,
+            char_uuid,
+            data,
+            read_uuid,
+            timeout,
+        } => {
+            let data = match hex_decode(data) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("ctf write-then-read: {e}");
+                    fail();
+                }
+            };
+            let dur = std::time::Duration::from_secs(*timeout);
+            let res = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let devs = BtleplugCentral.scan(dur).await?;
+                    let d = select_target_device(&devs, target)?.clone();
+                    let c = connect_client(bd.adapter.as_deref(), &d, dur).await?;
+                    crate::ctf::write_then_read(&c, char_uuid, &data, read_uuid).await
+                })
+            });
+            match res {
+                Ok(v) => println!("{v:?} ({})", san(&String::from_utf8_lossy(&v))),
+                Err(e) => {
+                    eprintln!("ctf write-then-read: {e}\n  fix: {}", e.remediation());
+                    fail();
+                }
+            }
+        }
+    }
+    Ok(0)
+}
+
+fn rules_cmd(_: &BleDoctor, args: &RulesArgs) -> Result<u8, String> {
+    let RulesArgs { action } = args;
+    match action {
+        RulesCmd::List { json } => println!("{}", rules_list(*json)),
+        RulesCmd::Explain { id } => finish(explain(id)),
+    }
+    Ok(0)
+}
+
+fn why_cmd(_: &BleDoctor, args: &WhyArgs) -> Result<u8, String> {
+    let WhyArgs { id, report } = args;
+    finish(why(id, report.as_deref()));
+    Ok(0)
+}
+
+fn handoff(_: &BleDoctor, args: &HandoffArgs) -> Result<u8, String> {
+    let HandoffArgs { report } = args;
+    finish(
+        crate::handoff::from_report(report)
+            .map(|v| serde_json::to_string_pretty(&v).unwrap() + "\n")
+            .map_err(|e| (2, format!("handoff: {e}"))),
+    );
+    Ok(0)
+}
+
+#[cfg(target_os = "linux")]
+fn mitm(bd: &BleDoctor, args: &MitmArgs) -> Result<u8, String> {
+    let MitmArgs {
         target,
         allow_dangerous,
-    } = &cli.command
-    {
-        if !allow_dangerous {
-            eprintln!(
-                "mitm: refused. This ACTIVELY intercepts GATT traffic between a victim and the \
-                 real device by cloning it as a peripheral (scope: own hardware or written \
-                 authorization only). Pass --allow-dangerous to proceed."
-            );
-            fail();
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let res = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(crate::mitm::live::serve(
-                    cli.adapter.as_deref(),
-                    target,
-                    *allow_dangerous,
-                ))
-            });
-            if let Err(e) = res {
-                eprintln!("mitm: {e}");
-                fail();
-            }
-            return;
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = target;
-            use crate::capability::{require, Feature};
-            let err = require(Feature::Mitm).expect_err("Mitm is Unsupported off Linux");
-            eprintln!(
-                "mitm: {err}\n  fix: needs Linux with 2 adapters + peripheral mode (bluster); \
-                 not available on this platform."
-            );
-            fail();
-        }
+    } = args;
+    if !allow_dangerous {
+        mitm_refused();
     }
-    if let Command::Doctor = &cli.command {
-        use crate::{capability::Platform, doctor};
-        let results = doctor::run_doctor(&doctor::Probes::detect(), Platform::current());
-        std::process::exit(doctor::print_report(&results));
+    let res = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(crate::mitm::live::serve(
+            bd.adapter.as_deref(),
+            target,
+            *allow_dangerous,
+        ))
+    });
+    if let Err(e) = res {
+        eprintln!("mitm: {e}");
+        fail();
     }
-    if let Command::Rules { action } = &cli.command {
-        match action {
-            RulesCmd::List { json } => println!("{}", rules_list(*json)),
-            RulesCmd::Explain { id } => finish(explain(id)),
-        }
-        return;
+    Ok(0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mitm(_: &BleDoctor, args: &MitmArgs) -> Result<u8, String> {
+    if !args.allow_dangerous {
+        mitm_refused();
     }
-    if let Command::Why { id, report } = &cli.command {
-        finish(why(id, report.as_deref()));
-        return;
-    }
-    if let Command::Handoff { report } = &cli.command {
-        finish(
-            crate::handoff::from_report(report)
-                .map(|v| serde_json::to_string_pretty(&v).unwrap() + "\n")
-                .map_err(|e| (2, format!("handoff: {e}"))),
-        );
-        return;
-    }
-    let (name, issue) = cli.command.stub();
-    println!("{name}: not yet implemented (#{issue})");
+    use crate::capability::{require, Feature};
+    let err = require(Feature::Mitm).expect_err("Mitm is Unsupported off Linux");
+    eprintln!(
+        "mitm: {err}\n  fix: needs Linux with 2 adapters + peripheral mode (bluster); \
+         not available on this platform."
+    );
+    fail();
+}
+
+fn mitm_refused() -> ! {
+    eprintln!(
+        "mitm: refused. This ACTIVELY intercepts GATT traffic between a victim and the \
+         real device by cloning it as a peripheral (scope: own hardware or written \
+         authorization only). Pass --allow-dangerous to proceed."
+    );
+    fail();
 }
 
 /// Decode a hex string (e.g. "01ff") into bytes for `ctf write-then-read --data`.
@@ -1253,11 +1329,11 @@ fn why(id: &str, report: Option<&std::path::Path>) -> Result<String, (i32, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
     fn clap_command_is_valid() {
-        Cli::command().debug_assert();
+        let meta = Meta::of(&BleDoctor::new(Subject::None, None, false));
+        doctor_kit::command_with(&meta, &extensions()).debug_assert();
     }
 
     #[test]
