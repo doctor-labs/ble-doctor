@@ -1,5 +1,5 @@
 //! Owner decision 6: only protocol/contract fixes may change machine-visible behavior; everything
-//! else stays exactly as ble-doctor 0.2.0 had it. One golden per reverted or kept case (the files in
+//! else stays exactly as ble-doctor 0.2.0 had it (the one kept usage error: --sarif == --baseline). One golden per reverted or kept case (the files in
 //! tests/golden/d6_*); tests/golden.rs stays as B0 wrote it.
 //! Regenerate with `UPDATE_GOLDENS=1 cargo test --test golden_d6`.
 
@@ -111,16 +111,21 @@ fn sarif_write_failure_prints_nothing() {
     assert_eq!(code, 2);
 }
 
-/// Reverted: `--sarif` naming the baseline file is not refused (0.2.0 wrote the SARIF over it).
-/// Runs on a scratch copy so the fixture stays intact.
+/// Kept (contract, usage error exit 2): `--sarif` naming the baseline file is refused, bare, before
+/// any output; 0.2.0 silently overwrote the baseline. The baseline stays untouched.
 #[test]
-fn sarif_over_baseline_is_not_refused() {
+fn sarif_over_baseline_is_refused() {
     let d = std::env::temp_dir().join(format!("bd-d6-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let base = d.join("base.json");
     std::fs::copy(root().join("fixtures/baseline_empty.json"), &base).unwrap();
+    let before = std::fs::read(&base).unwrap();
     let b = base.to_str().unwrap();
-    let (code, _, err) = cli(&["analyze", PCAP, "--json", "--baseline", b, "--sarif", b]);
-    assert_eq!((code, err.as_str()), (0, "baseline: score delta -15\n  NEW      Medium mac_rotation: MAC address is static across all 3 captured advertisement frames over 700s - trackable.\n"));
-    assert!(std::fs::read_to_string(&base).unwrap().contains("\"runs\""));
+    let (code, out, err) = cli(&["analyze", PCAP, "--json", "--baseline", b, "--sarif", b]);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert_eq!(
+        err,
+        format!("--sarif and --baseline name the same file ({b}); the report would overwrite its own baseline\n")
+    );
+    assert_eq!(std::fs::read(&base).unwrap(), before);
 }
