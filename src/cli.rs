@@ -36,8 +36,9 @@ pub struct ScanArgs {
     /// Emit the doctor/1 JSON envelope (needs --target)
     #[arg(long, requires = "target")]
     json: bool,
-    /// Show the findings in an interactive terminal UI (needs --target)
-    #[arg(long, requires = "target", conflicts_with = "json")]
+    /// Show the findings in an interactive terminal UI; without --target, a live-updating
+    /// device list instead (nRF Connect's scanner screen)
+    #[arg(long, conflicts_with = "json")]
     tui: bool,
     /// Write a SARIF 2.1.0 report to this file (needs --target)
     #[arg(long, requires = "target")]
@@ -592,6 +593,16 @@ fn scan(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
                 eprintln!("mtu: {e}\n  fix: {}", e.remediation());
                 fail();
             }
+        }
+        return Ok(0);
+    }
+    if target.is_none() && tui {
+        use crate::radio::BtleplugCentral;
+        if let Err(e) =
+            crate::scanner_tui::run(&BtleplugCentral, std::time::Duration::from_secs(timeout))
+        {
+            eprintln!("scan --tui: {e}");
+            fail();
         }
         return Ok(0);
     }
