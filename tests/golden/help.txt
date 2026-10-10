@@ -6,8 +6,6 @@ Usage: ble-doctor [OPTIONS] <COMMAND>
 Commands:
   scan          Scan for BLE devices
   analyze       Analyze a capture or device
-  shell         Interactive shell over the same session
-  explore       Full-screen explorer over the same session
   sniff         Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device
   fingerprint   Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)
   fix           Print (or copy) a prompt for a coding agent from one finding or the whole scan
@@ -25,6 +23,8 @@ Commands:
   rules         Inspect rules
   why           Explain a finding (rule doc, plus the finding from a report JSON)
   mitm          GATT MITM: clone the target as a peripheral and relay+log traffic to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)
+  shell         Interactive shell over a live device or a capture
+  explore       Full-screen explorer over a live device or a capture
   help          Print this message or the help of the given subcommand(s)
 
 Options:
@@ -73,28 +73,6 @@ Options:
       --score                Print only the score number
       --headless             Plain text, no color: for CI and pipes
   -h, --help                 Print help
-===== ble-doctor shell =====
-Interactive shell over the same session
-
-Usage: ble-doctor shell [OPTIONS]
-
-Options:
-      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
-      --config <CONFIG>    doctor.toml (default: <path>/doctor.toml when present)
-      --fail-on <FAIL_ON>  Exit 1 when a finding is at or above this severity [default: high]
-  -c <COMMAND>             Run these `;`-separated commands and exit
-      --json               Print every reply as one JSON record (for agents)
-  -h, --help               Print help
-===== ble-doctor explore =====
-Full-screen explorer over the same session
-
-Usage: ble-doctor explore [OPTIONS]
-
-Options:
-      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
-      --config <CONFIG>    doctor.toml (default: <path>/doctor.toml when present)
-      --fail-on <FAIL_ON>  Exit 1 when a finding is at or above this severity [default: high]
-  -h, --help               Print help
 ===== ble-doctor sniff =====
 Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device
 
@@ -374,4 +352,28 @@ Options:
       --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
       --target <TARGET>    The real target device to relay to (address / identifier / name) [env: BLE_DOCTOR_TARGET=]
       --allow-dangerous    Required: this actively intercepts GATT traffic between a victim and the real device (scope: own hardware or written authorization only)
+  -h, --help               Print help
+===== ble-doctor shell =====
+Interactive shell over a live device or a capture
+
+Usage: ble-doctor shell [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
+      --capture <CAPTURE>  Open a btsnoop/pcap capture instead of a live device
+  -c <COMMAND>             Run these `;`-separated commands and exit
+      --json               Print every reply as one JSON record (for agents)
+  -h, --help               Print help
+===== ble-doctor explore =====
+Full-screen explorer over a live device or a capture
+
+Usage: ble-doctor explore [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
+      --capture <CAPTURE>  Open a btsnoop/pcap capture instead of a live device
   -h, --help               Print help

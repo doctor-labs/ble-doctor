@@ -10,7 +10,7 @@ use crate::radio::{select_target_device, Central, DiscoveredDevice, GattClient};
 use crate::report::{coverage_gaps, finding, product_score, sanitize};
 use doctor_core::{Envelope, Location, LocationKind, Score};
 use doctor_kit::baseline::BaselineError;
-use doctor_kit::{Check, Collected, Ctx, Doctor, ScanFailure, TargetKind};
+use doctor_kit::{Check, Collected, Ctx, Doctor, Node, ScanFailure, TargetKind};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::future::Future;
@@ -105,6 +105,47 @@ where
     ))
 }
 
+/// The services of a live device as a shell tree: each service lists its writable and
+/// subscribable characteristics (the ones the checks look at). Strings come off the air.
+pub fn gatt_node(g: &GattInfo) -> Node {
+    let mut root = Node::new(
+        "services",
+        "device",
+        sanitize(g.target_name.as_deref().unwrap_or(&g.target)),
+    )
+    .meta("target", sanitize(&g.target))
+    .meta("pairing_method", sanitize(&g.pairing_method))
+    .meta("services", g.service_uuids.len());
+    for svc in &g.service_uuids {
+        let mut n = Node::new(svc, "service", "");
+        for w in g.writable_chars.iter().filter(|w| &w.service_uuid == svc) {
+            n = n.child(
+                Node::new(&w.uuid, "characteristic", sanitize(&w.properties.join(",")))
+                    .meta("requires_bonding", w.requires_bonding)
+                    .meta("bonding_basis", sanitize(&w.bonding_basis))
+                    .meta(
+                        "description",
+                        sanitize(w.description.as_deref().unwrap_or("")),
+                    ),
+            );
+        }
+        for c in g
+            .subscribe_chars
+            .iter()
+            .filter(|c| &c.service_uuid == svc)
+            .filter(|c| !g.writable_chars.iter().any(|w| w.uuid == c.uuid))
+        {
+            n = n.child(
+                Node::new(&c.uuid, "characteristic", sanitize(&c.properties.join(",")))
+                    .meta("cccd", c.cccd.map_or("unknown".into(), |b| b.to_string())),
+            );
+        }
+        n.summary = format!("{} characteristics", n.children.len());
+        root = root.child(n);
+    }
+    root
+}
+
 /// The four live checks over an enumerated device, as findings. The fingerprint identity is `target`
 /// exactly as given.
 pub fn live_collected(g: &GattInfo, target: &str) -> Collected {
@@ -123,6 +164,8 @@ pub struct BleDoctor {
     /// `--adapter`, for the commands that talk to a local adapter.
     pub adapter: Option<String>,
     pub out: Out,
+    /// The live device's GATT tree, for the shell and explorer.
+    gatt: Mutex<Option<GattInfo>>,
     /// The one gathered result: `shell` and `explore` re-scan, a radio must not be hit twice.
     cache: Mutex<Option<Result<Collected, ScanFailure>>>,
 }
@@ -133,6 +176,7 @@ impl BleDoctor {
             subject,
             adapter,
             out,
+            gatt: Mutex::new(None),
             cache: Mutex::new(None),
         }
     }
@@ -177,7 +221,9 @@ impl BleDoctor {
                 println!("  notify {} cccd={:?}", sanitize(&s.uuid), s.cccd);
             }
         }
-        Ok(live_collected(&g, target))
+        let c = live_collected(&g, target);
+        *self.gatt.lock().unwrap() = Some(g);
+        Ok(c)
     }
 
     fn gather_capture(&self, path: &std::path::Path) -> Result<Collected, ScanFailure> {
@@ -381,6 +427,22 @@ jobs:
         )
     }
 
+    /// The kit's findings tree, plus the device's services for a live subject.
+    fn tree(&self, env: &Envelope, ctx: &Ctx) -> Node {
+        let mut root = doctor_kit::session::default_tree(env, ctx);
+        root.meta.retain(|_, v| !v.is_null());
+        let subject = match &self.subject {
+            Subject::Capture(p) => p.display().to_string(),
+            Subject::Live { target, .. } => target.clone(),
+            Subject::None => "-".into(),
+        };
+        root.meta.insert("target".into(), json!(sanitize(&subject)));
+        if let Some(g) = self.gatt.lock().unwrap().as_ref() {
+            root.children.push(gatt_node(g));
+        }
+        root
+    }
+
     fn baseline_message(&self, e: &BaselineError) -> String {
         sanitize(&match e {
             BaselineError::Unreadable { path, err } => format!("baseline {path}: {err}"),
@@ -521,6 +583,56 @@ mod tests {
         assert_eq!(c.findings[0].location.kind, LocationKind::Device);
         assert_eq!(c.findings[0].location.reference, target);
         assert_eq!(c.data["passed"].as_array().unwrap().len(), 3);
+    }
+
+    /// The shell tree of a live device: findings by category, then services and their characteristics.
+    #[tokio::test]
+    async fn shell_tree_lists_services_and_characteristics() {
+        use crate::testkit::{FakeCentral, FakeCharacteristic, FakeClient, FakeGattTree};
+        const SVC: &str = "0000aaa0-0000-1000-8000-00805f9b34fb";
+        let tree = FakeGattTree::new().service(
+            SVC,
+            vec![
+                FakeCharacteristic::new("0000aaa1-0000-1000-8000-00805f9b34fb", SVC, &["write"]),
+                FakeCharacteristic::notify_without_cccd(
+                    "0000aaa2-0000-1000-8000-00805f9b34fb",
+                    SVC,
+                ),
+            ],
+        );
+        let g = enumerate(
+            &FakeCentral::new(vec![device("dev", "AA:BB:CC:DD:EE:FF")]),
+            |_| async { Ok(FakeClient::new(tree.clone())) },
+            "AA:BB:CC:DD:EE:FF",
+            Duration::from_secs(1),
+            Out::Quiet,
+        )
+        .await
+        .unwrap();
+        let d = BleDoctor::new(
+            Subject::Live {
+                target: "AA:BB:CC:DD:EE:FF".into(),
+                timeout: 1,
+            },
+            None,
+            Out::Quiet,
+        );
+        *d.cache.lock().unwrap() = Some(Ok(live_collected(&g, "AA:BB:CC:DD:EE:FF")));
+        *d.gatt.lock().unwrap() = Some(g);
+        let ctx = Ctx::detached(Default::default(), Severity::High);
+        let env = d.try_scan(&ctx).unwrap();
+        let root = d.tree(&env, &ctx);
+        let names: Vec<&str> = root.children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["gatt", "services"]);
+        let gatt = root.children.last().unwrap();
+        assert_eq!(gatt.children[0].name, SVC);
+        let chars: Vec<&str> = gatt.children[0]
+            .children
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(chars.len(), 2, "{chars:?}");
+        assert_eq!(root.meta["target"], "AA:BB:CC:DD:EE:FF");
     }
 
     /// The three live failures keep the text and the exit code `scan` has always had.

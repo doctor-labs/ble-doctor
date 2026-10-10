@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+Human output now uses doctor-kit faces; machine output is unchanged (pinned byte for byte by `tests/golden.rs`);
+new `shell` and `explore`. ble-doctor now runs on doctor-kit 0.2.
+
+- Human output of `scan --target` and `analyze` is drawn by a kit face (`--face rich|plain|compact`, `--theme`,
+  `--color`, `--headless`, `--score`) instead of the `[PASS]/[FAIL]` table. The `capture:` / `gatt:` summary lines and
+  the device list stay as preamble. `--json`, `--sarif`, `--baseline`, `--fail-on`, exit codes 0/1/2/3, fingerprints,
+  SARIF bytes, `rules`, `mcp` and every other command's output are unchanged.
+- New: `shell` and `explore` (on by default; build with `default-features = false` on doctor-kit to drop them) over a
+  live `--target` or a `--capture` file: findings by category plus the device's services and characteristics.
+  `scan --tui` opens the explorer and then prints the report (the old ratatui view is gone).
+- New: `fix` (agent prompt from a finding or `--from report.json`), `install` (agent skill, Cursor rule, AGENTS.md
+  block: the skill forbids the active probes), `ci install` (analyzes `captures/`; installs `libdbus-1-dev`).
+- A bad `--baseline`, or `--sarif` and `--baseline` naming the same file, is refused before the radio is touched.
+  `--sarif` is written atomically; a failed write still prints the report and exits 2.
+- A `--baseline` file must be a `doctor/1` object or a bare findings array whose entries all carry a `fingerprint`.
+- Library API removed: `cli::{Cli, Command, run(Cli)}` (the binary is `doctor_kit::run_with`; `cli::run()` replaces it),
+  `report::to_table`, `baseline::report_diff`, the `tui` module. Kept: `report::{to_envelope, gate_exit, to_json, score}`,
+  `baseline::{load, diff}`, `sarif::to_sarif` (the goldens call them).
+- The MCP server is unchanged (still ble's own loop: the kit cannot yet reproduce its `unknown tool` error text).
+
+### Also in 0.3.0
 
 - Rename: drop "V2" from the product identity (docs say "BLE Doctor"); SARIF `informationUri` and
   `Cargo.toml` `repository`/`homepage` now point to https://github.com/doctor-labs/ble-doctor.
