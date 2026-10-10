@@ -81,11 +81,12 @@ Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hard
 Usage: ble-doctor sniff [OPTIONS]
 
 Options:
-      --adapter <ADAPTER>      Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
-      --device <DEVICE>        Serial/USB sniffer port (e.g. /dev/ttyACM0)
-      --from-file <FROM_FILE>  Saved Sniffle text dump to parse instead of live capture
-      --json                   Emit JSON
-  -h, --help                   Print help
+      --adapter <ADAPTER>        Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --device <DEVICE>          Serial/USB sniffer port (e.g. /dev/ttyACM0)
+      --from-file <FROM_FILE>    Saved Sniffle text dump to parse instead of live capture
+      --json                     Emit JSON
+      --write-pcap <WRITE_PCAP>  Also write the session's advertising frames as a pcap (Wireshark/crackle can open it)
+  -h, --help                     Print help
 ===== ble-doctor fingerprint =====
 Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)
 

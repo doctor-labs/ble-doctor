@@ -26,6 +26,24 @@ pub struct CaptureInfo {
     /// Reassembled SMP PDUs (L2CAP CID 0x0006 payloads: code + body), in capture order.
     #[serde(skip)]
     pub smp_pdus: Vec<Vec<u8>>,
+    /// Advertising frames (`AdvFrame`), kept alongside `adv_mac_addresses`/`adv_frame_timestamps`
+    /// so a capture can be written back out (`write_pcap`) — a `scan`/`sniff` session or a
+    /// previously-read capture re-materialized for Wireshark/crackle.
+    #[serde(skip)]
+    pub adv_frames: Vec<AdvFrame>,
+}
+
+/// One advertising PDU, enough to re-emit a pcap `LINKTYPE_BLUETOOTH_LE_LL` frame:
+/// AA + header(type, len) + `AdvA` + `AdvData`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdvFrame {
+    pub ts: f64,
+    /// `AdvA`, on-air byte order (as transmitted; the reverse of `fmt_mac`'s display order).
+    pub mac_onair: [u8; 6],
+    /// LL PDU type low nibble: 0 ADV_IND, 1 ADV_DIRECT_IND, 2 ADV_NONCONN_IND, 4 SCAN_RSP,
+    /// 6 ADV_SCAN_IND.
+    pub pdu_type: u8,
+    pub adv_data: Vec<u8>,
 }
 
 /// L2CAP reassembly keyed by link (pcap: access address, btsnoop: ACL handle); keeps SMP payloads.
@@ -142,13 +160,23 @@ fn parse_pcap(d: &[u8]) -> Result<CaptureInfo, String> {
         if ll.len() < 12 {
             continue;
         }
-        if !matches!(ll[4] & 0x0F, 0 | 1 | 2 | 4 | 6) {
+        let pdu_type = ll[4] & 0x0F;
+        if !matches!(pdu_type, 0 | 1 | 2 | 4 | 6) {
             continue;
         }
         let div = if nano { 1e9 } else { 1e6 };
+        let ts = sec as f64 + frac as f64 / div;
         info.adv_mac_addresses.push(fmt_mac(&ll[6..12]));
-        info.adv_frame_timestamps
-            .push(sec as f64 + frac as f64 / div);
+        info.adv_frame_timestamps.push(ts);
+        let adv_data = ll
+            .get(12..12 + (ll[5] as usize).saturating_sub(6))
+            .unwrap_or(&[]);
+        info.adv_frames.push(AdvFrame {
+            ts,
+            mac_onair: ll[6..12].try_into().unwrap(),
+            pdu_type,
+            adv_data: adv_data.to_vec(),
+        });
     }
     info.smp_pdus = asm.smp;
     Ok(finish(info))
@@ -204,17 +232,36 @@ fn parse_btsnoop(d: &[u8]) -> Result<CaptureInfo, String> {
         }
         let ts_us = ((u64::from(ts_hi) << 32) | u64::from(ts_lo)) as i64 - BTSNOOP_EPOCH_OFFSET;
         let ts = ts_us as f64 / 1e6;
-        for mac in evt.map(le_adv_reports).unwrap_or_default() {
+        for (mac, mac_onair, pdu_type, adv_data) in evt.map(le_adv_reports).unwrap_or_default() {
             info.adv_mac_addresses.push(mac);
             info.adv_frame_timestamps.push(ts);
+            info.adv_frames.push(AdvFrame {
+                ts,
+                mac_onair,
+                pdu_type,
+                adv_data,
+            });
         }
     }
     info.smp_pdus = asm.smp;
     Ok(finish(info))
 }
 
-/// Addresses from an HCI LE Meta event (0x3e): legacy (0x02) and extended (0x0d) adv reports.
-fn le_adv_reports(e: &[u8]) -> Vec<String> {
+/// HCI legacy LE Advertising Report `Event_Type` (0=ADV_IND..4=SCAN_RSP) -> LL PDU type nibble.
+fn hci_event_type_to_pdu_type(t: u8) -> u8 {
+    match t {
+        1 => 1, // ADV_DIRECT_IND
+        2 => 6, // ADV_SCAN_IND
+        3 => 2, // ADV_NONCONN_IND
+        4 => 4, // SCAN_RSP
+        _ => 0, // ADV_IND (also the default/unknown fallback)
+    }
+}
+
+/// Advertising frames from an HCI LE Meta event (0x3e): legacy (0x02) and extended (0x0d) adv
+/// reports. `(mac display string, AdvA on-air bytes, LL pdu type, AdvData)` per report; extended
+/// reports' richer event-type bitmask isn't decoded, so they're reported as ADV_IND (pdu_type 0).
+fn le_adv_reports(e: &[u8]) -> Vec<(String, [u8; 6], u8, Vec<u8>)> {
     let mut out = vec![];
     if e.len() < 4 || e[0] != 0x3E {
         return out;
@@ -223,17 +270,31 @@ fn le_adv_reports(e: &[u8]) -> Vec<String> {
     for _ in 0..n {
         // fixed bytes before dlen: legacy = type,atype,addr(6); extended = type(2),atype,addr(6),
         // phy1,phy2,sid,txp,rssi,interval(2),dtype,daddr(6)
-        let (addr_at, dlen_at) = match sub {
-            0x02 => (p + 2, p + 8),
-            0x0D => (p + 3, p + 24),
+        let (ty_at, addr_at, dlen_at) = match sub {
+            0x02 => (p, p + 2, p + 8),
+            0x0D => (p, p + 3, p + 24),
             _ => return out,
         };
-        let (Some(a), Some(&dlen)) = (e.get(addr_at..addr_at + 6), e.get(dlen_at)) else {
+        let (Some(&ty), Some(a), Some(&dlen)) =
+            (e.get(ty_at), e.get(addr_at..addr_at + 6), e.get(dlen_at))
+        else {
             return out;
         };
-        out.push(fmt_mac(a));
+        let data_at = dlen_at + 1;
+        let adv_data = e.get(data_at..data_at + dlen as usize).unwrap_or(&[]);
+        let pdu_type = if sub == 0x02 {
+            hci_event_type_to_pdu_type(ty)
+        } else {
+            0
+        };
+        out.push((
+            fmt_mac(a),
+            a.try_into().unwrap(),
+            pdu_type,
+            adv_data.to_vec(),
+        ));
         // legacy reports have a trailing RSSI byte
-        p = dlen_at + 1 + dlen as usize + usize::from(sub == 0x02);
+        p = data_at + dlen as usize + usize::from(sub == 0x02);
     }
     out
 }
@@ -260,6 +321,36 @@ fn rpa_resolution(macs: &[String], irks: &[[u8; 16]]) -> (usize, usize) {
         }
     }
     (resolved, by_irk.len())
+}
+
+/// Write `frames` as a pcap `LINKTYPE_BLUETOOTH_LE_LL` capture (openable in Wireshark; crackle
+/// also reads pcap), round-trippable through `parse_capture`/`parse_pcap`. Lets a `scan` or
+/// `sniff` session (and a previously-read capture's own `adv_frames`) be exported for other
+/// tools. `scan`/`mitm` producing `AdvFrame`s of their own (as opposed to re-exporting an already
+/// -parsed capture) needs raw-radio frame capture, which isn't wired yet — see #95's PR.
+pub fn write_pcap(frames: &[AdvFrame]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend(0xA1B2_C3D4u32.to_le_bytes()); // magic: little-endian, microsecond timestamps
+    out.extend([2, 0, 4, 0]); // version 2.4
+    out.extend([0u8; 8]); // thiszone, sigfigs
+    out.extend(65535u32.to_le_bytes()); // snaplen
+    out.extend(LINKTYPE_BLUETOOTH_LE_LL.to_le_bytes());
+    for f in frames {
+        let mut p = ADV_ACCESS_ADDRESS.to_le_bytes().to_vec();
+        p.push(0x40 | f.pdu_type); // TxAdd=1 (random address, the common case); ChSel/RxAdd unset
+        p.push(6 + f.adv_data.len() as u8);
+        p.extend(f.mac_onair);
+        p.extend(&f.adv_data);
+        p.extend([0, 0, 0]); // CRC: not recomputed, parse_pcap doesn't check it
+        let sec = f.ts.floor().max(0.0) as u32;
+        let us = ((f.ts - f.ts.floor()) * 1e6).round() as u32;
+        out.extend(sec.to_le_bytes());
+        out.extend(us.to_le_bytes());
+        out.extend((p.len() as u32).to_le_bytes());
+        out.extend((p.len() as u32).to_le_bytes());
+        out.extend(p);
+    }
+    out
 }
 
 /// Duration-aware MAC rotation verdict (v1 `check_mac_rotation`). `irks` are IRKs the operator
@@ -427,6 +518,42 @@ mod tests {
 
     fn mac(n: u8) -> [u8; 6] {
         [0xC0, 0, 0, 0, 0, n]
+    }
+
+    #[test]
+    fn parse_pcap_populates_adv_frames() {
+        let info = parse_capture(&pcap(&[mac(1)], &[42])).unwrap();
+        assert_eq!(info.adv_frames.len(), 1);
+        let f = &info.adv_frames[0];
+        assert_eq!(f.ts, 42.0);
+        assert_eq!(f.pdu_type, 0); // ADV_IND
+        assert_eq!(f.adv_data, [0x02, 0x01, 0x06]);
+        // on-air bytes are the reverse of the test helper's `mac` (display order).
+        assert_eq!(f.mac_onair, {
+            let mut m = mac(1);
+            m.reverse();
+            m
+        });
+    }
+
+    #[test]
+    fn write_pcap_round_trips_through_parse_pcap() {
+        let macs: Vec<_> = (0..3).map(mac).collect();
+        let before = parse_capture(&pcap(&macs, &[0, 300, 600])).unwrap();
+        assert_eq!(before.adv_frames.len(), 3);
+        let bytes = write_pcap(&before.adv_frames);
+        let after = parse_capture(&bytes).unwrap();
+        assert_eq!(after.adv_mac_addresses, before.adv_mac_addresses);
+        assert_eq!(after.adv_frame_timestamps, before.adv_frame_timestamps);
+        assert_eq!(after.adv_frames, before.adv_frames);
+    }
+
+    #[test]
+    fn write_pcap_of_nothing_is_still_a_valid_empty_capture() {
+        let empty = write_pcap(&[]);
+        let info = parse_capture(&empty).unwrap();
+        assert!(info.adv_frames.is_empty());
+        assert_eq!(info.capture_flavour.as_deref(), Some("pcap-le-ll"));
     }
 
     #[test]

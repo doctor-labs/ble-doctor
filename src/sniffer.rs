@@ -7,7 +7,7 @@
 //! Output is the `capture.rs` shape, so it feeds `check_mac_rotation` unchanged.
 
 use crate::capability::{self, Feature};
-use crate::capture::CaptureInfo;
+use crate::capture::{AdvFrame, CaptureInfo};
 use crate::error::BleError;
 
 const MSG_PACKET: u8 = 0x10;
@@ -55,8 +55,18 @@ pub fn parse_sniffle(text: &str) -> CaptureInfo {
             continue;
         }
         let mac: Vec<String> = pdu[2..8].iter().rev().map(|b| format!("{b:02x}")).collect();
+        let ts_secs = ts as f64 / 1e6;
         info.adv_mac_addresses.push(mac.join(":"));
-        info.adv_frame_timestamps.push(ts as f64 / 1e6);
+        info.adv_frame_timestamps.push(ts_secs);
+        let adv_data = pdu
+            .get(8..8 + (pdu[1] as usize).saturating_sub(6))
+            .unwrap_or(&[]);
+        info.adv_frames.push(AdvFrame {
+            ts: ts_secs,
+            mac_onair: pdu[2..8].try_into().unwrap(),
+            pdu_type: pdu[0] & 0x0F,
+            adv_data: adv_data.to_vec(),
+        });
     }
     if let (Some(min), Some(max)) = (
         info.adv_frame_timestamps.iter().cloned().reduce(f64::min),

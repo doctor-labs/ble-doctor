@@ -164,3 +164,37 @@ fn repl_commands_are_listed_and_refuse_a_capture_subject() {
         assert!(err.contains("no live target"), "{cmd}: {err}");
     }
 }
+
+#[test]
+fn sniff_write_pcap_is_openable_by_analyze() {
+    let d = scratch("sniff-write-pcap");
+    // Two Sniffle-format advertising frames, same fixture bytes `sniffer::tests` uses.
+    let dump = d.join("session.sniffle");
+    std::fs::write(
+        &dump,
+        "BxBAQg8ACwDOJQAJBQQDAgGqAgEG\nBxAAJ7kpCwDOJQAJBQQDAgG7AgEG\n",
+    )
+    .unwrap();
+    let out_pcap = d.join("session.pcap");
+    let (code, out, err) = run(&[
+        "sniff",
+        "--from-file",
+        dump.to_str().unwrap(),
+        "--write-pcap",
+        out_pcap.to_str().unwrap(),
+    ]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    assert!(out.contains("2 adv frames"), "{out}");
+    assert!(out_pcap.is_file(), "no pcap written");
+    // The written pcap round-trips through analyze like any other capture.
+    let (code, out, err) = run(&["analyze", out_pcap.to_str().unwrap(), "--json"]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        v["data"]["capture"]["adv_mac_addresses"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
