@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="ble-doctor">
+<rect x="2" y="2" width="60" height="60" rx="5" fill="#0a0f13"/>
+<path d="M2 10 V2 H10 M54 2 H62 V10 M62 54 V62 H54 M10 62 H2 V54" stroke="#19c3ab" stroke-width="2" fill="none"/>
+<path d="M27 14 L39 23 L23 33 L39 43 L27 52 V14 M23 33 L17 28 M23 33 L17 38" stroke="#19c3ab" stroke-width="2" stroke-linejoin="miter" stroke-linecap="square" fill="none"/>
+<path d="M44 26 a8 8 0 0 1 0 12 M48 22 a14 14 0 0 1 0 20" stroke="#2fd27a" stroke-width="2" fill="none"/>
+</svg>

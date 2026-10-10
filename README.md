@@ -1,11 +1,55 @@
-# BLE Doctor
+<p align="center"><img src="docs/assets/hero.svg" alt="ble-doctor illustration" width="100%"></p>
 
-BLE security auditor & scorer — a single cross-platform Rust CLI (superset of common BLE tools).
-Defensive / CTF / own-gear use only. Successor to the archived Python ble-doctor-v1.
+<h1><img src="docs/assets/logo.svg" width="36" height="36" alt="" align="absmiddle"> ble-doctor</h1>
 
-Build tracked in the 27 repo issues. See `docs/` for design and the deferred-test checklist.
+[![CI](https://github.com/doctor-labs/ble-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/doctor-labs/ble-doctor/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ble-doctor)](https://crates.io/crates/ble-doctor)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![contract](https://img.shields.io/badge/contract-doctor%2F1-19c3ab)](docs/doctor-contract.md)
+[![telemetry](https://img.shields.io/badge/telemetry-none-2fd27a)](#use)
+
+**Examines a Bluetooth LE device or a btsnoop/pcap capture and answers: how exposed is its pairing, GATT surface and privacy, and what should be fixed first?**
+
+A single cross-platform Rust CLI that scores the result and reports findings as `doctor/1` JSON or SARIF. Defensive, CTF and own-gear use only. Successor to the archived Python ble-doctor-v1.
+
+```text
+$ ble-doctor analyze s.btsnoop
+capture: btsnoop-h4 (0 adv frames)
+BLE Doctor - score: 60/100
+
+[FAIL] mac_rotation (info): Not enough advertisement frames captured to judge MAC rotation.
+[FAIL] smp_legacy_pairing (high): SMP legacy pairing: LE Secure Connections not set by both sides; the key exchange is passively crackable.
+[FAIL] smp_just_works (medium): SMP Just Works association: unauthenticated, no MITM protection.
+[PASS] smp_key_size (medium): Encryption key size is 16 bytes.
+smp: 2 PDUs
+smp: pairing method just_works, legacy pairing, max key size 16
+```
+
+The capture is a two-packet btsnoop (a legacy Just Works pairing exchange) built by the `analyze_extracts_smp_pairing` test in `tests/conformance.rs`. The command exits 1 because a `high` finding is present.
+
+## Install
+
+```sh
+cargo install ble-doctor
+```
+
+From source: `cargo build --release` (Linux needs `libdbus-1-dev` and `pkg-config`). Tagged releases also attach binaries for Linux, macOS and Windows (`release.yml`).
+
+## Use
+
+| Command | What it does |
+|---|---|
+| `ble-doctor scan --target <addr>` | Scan, connect and score a device (`--json`, `--sarif FILE`, `--baseline FILE`, `--fail-on SEV`, `--tui`) |
+| `ble-doctor analyze <capture>` | Score a btsnoop/pcap capture, including SMP pairing (`--json`, `--sarif`, `--baseline`, `--fail-on`) |
+| `ble-doctor fingerprint --target <addr>` | LE+GATT profile (plus SDP/LMP on Linux) |
+| `ble-doctor recon`, `read-values`, `probe-writes`, `dfu`, `sniff`, `mitm`, `ctf` | Active and empirical probes; own-gear scope |
+| `ble-doctor rules`, `why`, `baseline`, `handoff`, `doctor` | Rule docs, finding explanations, baseline snapshots, handoff bundle, environment check |
+| `ble-doctor mcp` | MCP server exposing `scan` and `analyze` |
+
+Run `ble-doctor <command> --help` for every flag. Build progress is tracked in the repo issues; see `docs/` for design and the deferred-test checklist.
 
 ## Machine output
+
 
 `scan --json` and `analyze --json` print one `doctor/1` envelope (`schema`, `tool`, `version`,
 `exit_code`, `score`, `findings`, `data`); see [`docs/doctor-contract.md`](docs/doctor-contract.md).
@@ -48,3 +92,5 @@ Both also take `--sarif FILE`, `--baseline FILE` (a previous envelope) and `--fa
 - MCP (`ble-doctor mcp`): tools `scan` and `analyze` return the same envelope and accept
   `baseline`, `fail_on` and `sarif`. Not exposed over MCP: `--tui`, `--mtu`, `--as-address`,
   `--timeout`, `--adapter`, and every probe/write command.
+
+Part of [doctor·labs](https://github.com/doctor-labs) — offline security doctors.
