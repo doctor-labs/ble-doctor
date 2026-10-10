@@ -270,6 +270,33 @@ pub enum RulesCmd {
     },
 }
 
+/// The subject of `shell` and `explore`: a live device, or a capture file.
+#[derive(Args, Debug)]
+pub struct SessionArgs {
+    /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
+    #[arg(long, env = "BLE_DOCTOR_TARGET", required_unless_present = "capture")]
+    target: Option<String>,
+    /// Scan/connect timeout in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+    /// Open a btsnoop/pcap capture instead of a live device
+    #[arg(long)]
+    capture: Option<std::path::PathBuf>,
+}
+
+/// `shell` arguments.
+#[derive(Args, Debug)]
+pub struct ShellArgs {
+    #[command(flatten)]
+    session: SessionArgs,
+    /// Run these `;`-separated commands and exit
+    #[arg(short = 'c')]
+    command: Option<String>,
+    /// Print every reply as one JSON record (for agents)
+    #[arg(long)]
+    json: bool,
+}
+
 /// `command` for ble's own `vn` arguments: `run` gets them parsed.
 macro_rules! ext {
     ($order:expr, $name:literal, $A:ty, $f:path) => {
@@ -299,6 +326,8 @@ fn about(name: &str) -> &'static str {
         "handoff" => "Export a handoff bundle",
         "rules" => "Inspect rules",
         "why" => "Explain a finding (rule doc, plus the finding from a report JSON)",
+        "shell" => "Interactive shell over a live device or a capture",
+        "explore" => "Full-screen explorer over a live device or a capture",
         "mitm" => "GATT MITM: clone the target as a peripheral and relay+log traffic to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)",
         _ => unreachable!("{name}"),
     }
@@ -394,6 +423,18 @@ pub fn extensions() -> Extensions<BleDoctor> {
             ext!(13, "rules", RulesArgs, rules_cmd),
             ext!(14, "why", WhyArgs, why_cmd),
             ext!(15, "mitm", MitmArgs, mitm),
+            ExtCommand {
+                command: ShellArgs::augment_args(clap::Command::new("shell"))
+                    .about(about("shell"))
+                    .display_order(16),
+                run: shell,
+            },
+            ExtCommand {
+                command: SessionArgs::augment_args(clap::Command::new("explore"))
+                    .about(about("explore"))
+                    .display_order(17),
+                run: explore,
+            },
         ],
         global_args: vec![Arg::new("adapter")
             .long("adapter")
@@ -404,8 +445,32 @@ pub fn extensions() -> Extensions<BleDoctor> {
     }
 }
 
+/// Scan the subject once (a failure is reported as `scan` reports it), then hand the session to the
+/// kit's shell or explorer; both read the cached result, so the radio is hit once.
+fn session(bd: &BleDoctor) -> Result<Ctx, u8> {
+    let ctx = Ctx::detached(Default::default(), Severity::High);
+    bd.try_scan(&ctx)
+        .map(|_| ctx)
+        .map_err(|f| doctor_kit::output::report_failure(bd, &f))
+}
+
+fn shell(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
+    let a = ShellArgs::from_arg_matches(m).map_err(|e| e.to_string())?;
+    match session(bd) {
+        Ok(ctx) => doctor_kit::repl::run(bd, ctx, a.command.as_deref(), a.json),
+        Err(code) => Ok(code),
+    }
+}
+
+fn explore(bd: &BleDoctor, _: &ArgMatches) -> Result<u8, String> {
+    match session(bd) {
+        Ok(ctx) => doctor_kit::tui::run(bd, ctx).map(|_| 0),
+        Err(code) => Ok(code),
+    }
+}
+
 /// The doctor, from the parsed command line: the adapter and the subject (a capture for `analyze`,
-/// the target for `scan`; `$BLE_DOCTOR_TARGET` for the kit's `fix`, `shell` and `explore`).
+/// the target for `scan`, `shell` and `explore`; `$BLE_DOCTOR_TARGET` for the kit's `fix`).
 fn build(m: &ArgMatches) -> Result<BleDoctor, String> {
     let sub = m.subcommand();
     let flag = |id: &str| {
@@ -427,16 +492,29 @@ fn build(m: &ArgMatches) -> Result<BleDoctor, String> {
                 .cloned()
                 .unwrap_or_default(),
         ),
+        Some(("shell" | "explore", s)) => match s.get_one::<std::path::PathBuf>("capture") {
+            Some(c) => Subject::Capture(c.clone()),
+            None => live(
+                s.get_one::<String>("target").cloned(),
+                s.get_one::<u64>("timeout").copied().unwrap_or(5),
+            ),
+        },
         Some(("scan", s)) => live(
             s.get_one::<String>("target").cloned(),
             s.get_one::<u64>("timeout").copied().unwrap_or(5),
         ),
         _ => live(std::env::var("BLE_DOCTOR_TARGET").ok(), 5),
     };
-    let out = match (flag("json") || flag("score"), flag("tui")) {
-        (true, _) => Out::Machine,
-        (_, true) => Out::Quiet,
-        _ => Out::Human,
+    // The shell keeps stdout for its replies (the device list goes to stderr); the explorer owns the
+    // whole terminal.
+    let out = match sub.map(|(n, _)| n) {
+        Some("shell") => Out::Machine,
+        Some("explore") => Out::Quiet,
+        _ => match (flag("json") || flag("score"), flag("tui")) {
+            (true, _) => Out::Machine,
+            (_, true) => Out::Quiet,
+            _ => Out::Human,
+        },
     };
     Ok(BleDoctor::new(subject, adapter, out))
 }

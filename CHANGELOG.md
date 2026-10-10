@@ -1,6 +1,37 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+Human output now uses doctor-kit faces; machine output is unchanged (pinned byte for byte by `tests/golden.rs`);
+new `shell` and `explore`. ble-doctor now runs on doctor-kit 0.2.
+
+- Human output of `scan --target` and `analyze` is drawn by a kit face (`--face rich|plain|compact`, `--theme`,
+  `--color`, `--headless`, `--score`) instead of the `[PASS]/[FAIL]` table. The `capture:` / `gatt:` summary lines and
+  the device list stay as preamble. `--json`, `--sarif`, `--baseline`, `--fail-on`, exit codes 0/1/2/3, fingerprints,
+  SARIF bytes, `rules`, `mcp` and every other command's output are unchanged.
+- New: `shell` and `explore` (on by default; build with `default-features = false` on doctor-kit to drop them) over a
+  live `--target` or a `--capture` file: findings by category plus the device's services and characteristics.
+  `scan --tui` opens the explorer and then prints the report (the old ratatui view is gone).
+- New: `fix` (agent prompt from a finding or `--from report.json`), `install` (agent skill, Cursor rule, AGENTS.md
+  block: the skill forbids the active probes), `ci install` (analyzes `captures/`; installs `libdbus-1-dev`).
+- Library API removed: `cli::{Cli, Command, run(Cli)}` (the binary is `doctor_kit::run_with`; `cli::run()` replaces it),
+  `report::to_table`, `baseline::report_diff`, the `tui` module, `mcp::{handle, serve}` (the kit serves MCP now).
+  Kept: `report::{to_envelope, gate_exit, to_json, score}`, `baseline::{load, diff}`, `sarif::to_sarif`
+  (the goldens call them), `mcp::{TOOLS, argv_for}`.
+- Everything else machine-visible is unchanged on purpose (pinned by `tests/golden.rs` and `tests/golden_d6.rs`):
+  baseline parsing (a bare findings array is still refused, entries without a fingerprint are still skipped, no
+  size cap), bare `baseline <path>: ...` errors, the `sarif: <path>: <e>` write failure printed before anything
+  else, MCP tool errors and unknown-tool text.
+
+### Fixed (contract)
+
+- MCP: a request that is not a JSON object, has an `id` that is not a string or integer, or has no `method`
+  now gets a JSON-RPC -32600 error (it used to get no answer, an echoed id, or "method not found"); `ping` is
+  answered. Errors already exited 2 (doctor/1).
+- `--sarif` and `--baseline` naming the same file is refused as a usage error (bare message, exit 2, nothing
+  written): 0.2.0 silently overwrote the baseline with the SARIF.
+
+### Also in 0.3.0
 
 - Rename: drop "V2" from the product identity (docs say "BLE Doctor"); SARIF `informationUri` and
   `Cargo.toml` `repository`/`homepage` now point to https://github.com/doctor-labs/ble-doctor.

@@ -13,17 +13,18 @@
 A single cross-platform Rust CLI that scores the result and reports findings as `doctor/1` JSON or SARIF. Defensive, CTF and own-gear use only. Successor to the archived Python ble-doctor-v1.
 
 ```text
-$ ble-doctor analyze s.btsnoop
+$ ble-doctor analyze s.btsnoop --headless
 capture: btsnoop-h4 (0 adv frames)
-BLE Doctor - score: 60/100
-
-[FAIL] mac_rotation (info): Not enough advertisement frames captured to judge MAC rotation.
-[FAIL] smp_legacy_pairing (high): SMP legacy pairing: LE Secure Connections not set by both sides; the key exchange is passively crackable.
-[FAIL] smp_just_works (medium): SMP Just Works association: unauthenticated, no MITM protection.
-[PASS] smp_key_size (medium): Encryption key size is 16 bytes.
 smp: 2 PDUs
 smp: pairing method just_works, legacy pairing, max key size 16
+ble-doctor 0.3.0  score 60/100 needs work
+high      smp_legacy_pairing     s.btsnoop  SMP legacy pairing: LE Secure Connections not set by both sides; the key exchange is passively crackable.
+medium    smp_just_works         s.btsnoop  SMP Just Works association: unauthenticated, no MITM protection.
+info      mac_rotation           s.btsnoop  Not enough advertisement frames captured to judge MAC rotation.
+1 high · 1 medium · 1 info
 ```
+
+Without `--headless` the report is drawn by a doctor-kit face (`--face rich|plain|compact`, `--theme mono|clinical|contrast`, `--color`); `--score` prints only the number.
 
 The capture is a two-packet btsnoop (a legacy Just Works pairing exchange) built by the `analyze_extracts_smp_pairing` test in `tests/conformance.rs`. The command exits 1 because a `high` finding is present.
 
@@ -39,8 +40,12 @@ From source: `cargo build --release` (Linux needs `libdbus-1-dev` and `pkg-confi
 
 | Command | What it does |
 |---|---|
-| `ble-doctor scan --target <addr>` | Scan, connect and score a device (`--json`, `--sarif FILE`, `--baseline FILE`, `--fail-on SEV`, `--tui`) |
+| `ble-doctor scan --target <addr>` | Scan, connect and score a device (`--json`, `--sarif FILE`, `--baseline FILE`, `--fail-on SEV`, `--tui` opens the explorer first) |
 | `ble-doctor analyze <capture>` | Score a btsnoop/pcap capture, including SMP pairing (`--json`, `--sarif`, `--baseline`, `--fail-on`) |
+| `ble-doctor shell --target <addr>` / `--capture <file>` | Interactive shell over the findings and the device's services (`ls`, `cd`, `cat`, `why`, `export`; `-c "ls; cat 1"`, `--json` for agents) |
+| `ble-doctor explore --target <addr>` / `--capture <file>` | Full-screen explorer over the same session |
+| `ble-doctor fix [--from report.json]` | A prompt for a coding agent from one finding or the whole report |
+| `ble-doctor install`, `ble-doctor ci install` | Write the agent skill / Cursor rule / AGENTS.md block, or a GitHub Actions workflow that analyzes `captures/` |
 | `ble-doctor fingerprint --target <addr>` | LE+GATT profile (plus SDP/LMP on Linux) |
 | `ble-doctor recon`, `read-values`, `probe-writes`, `dfu`, `sniff`, `mitm`, `ctf` | Active and empirical probes; own-gear scope |
 | `ble-doctor rules`, `why`, `baseline`, `handoff`, `doctor` | Rule docs, finding explanations, baseline snapshots, handoff bundle, environment check |

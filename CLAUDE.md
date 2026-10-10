@@ -14,7 +14,8 @@ attribution) live in AGENTS.md — read it before changing anything:
 ## Module map (`src/`) → owning issue
 
 - `main.rs`, `cli.rs` — clap entry; subcommands: `scan` `analyze` `probe-writes` `read-values`
-  `dfu` `doctor` `mcp` `recon` `ctf` `baseline` `handoff` `rules` `why` (+ `--tui`) — #1
+  `dfu` `doctor` `mcp` `recon` `ctf` `baseline` `handoff` `rules` `why` `shell` `explore` (+ the kit's `fix` `install` `ci`) — #1;
+  `run()` is doctor-kit's `run_with`, every ble command is an `ExtCommand`
 - `error.rs` — `BleError` (thiserror) + `remediation()` + backend mappers (BlueZ/CoreBluetooth/WinRT) — #2
 - `capability.rs` — `{Feature × Platform} → Support`, `require()` — #3
 - `doctor.rs` — preflight (adapter / permission / daemon / feature table), injectable probes — #4
@@ -24,13 +25,15 @@ attribution) live in AGENTS.md — read it before changing anything:
 - `checks.rs`, `rules.rs` — pure checks (`CheckResult{id,severity,passed,detail}`) + rule catalog
   (`rule_docs/<id>.md`, 4 headings) — #7 / #23
 - `report.rs`, `sarif.rs` — product-of-survival score (`SEVERITY_WEIGHT` CRIT50/HIGH30/MED15/LOW5/INFO0)
-  + doctor/1 envelope (`docs/doctor-contract.md`) / table / the one `sanitize()` for human output
+  + doctor/1 envelope (`docs/doctor-contract.md`) / the one `sanitize()` for human output
   + SARIF 2.1.0 (16-hex fingerprint = rule id + device identity) — #7
 - `probe/write.rs` `read.rs` `dfu.rs` — opt-in probes, firmware denylist, `--allow-dangerous` — #8/#9/#10
 - `capture.rs` — native btsnoop/pcap parse + MAC-rotation (`MIN_ROTATION_OBSERVATION_SECONDS=600`) — #11
 - `recon.rs` `ctf.rs` `baseline.rs` `handoff.rs` — v1-parity extras — #21/#22/#26/#27
 - `mcp.rs` — MCP server exposing ONLY `scan` + `analyze` (dangerous ops never reachable) — #12
-- `tui.rs` — ratatui view — #14
+- `kit.rs` — `BleDoctor: Doctor` (doctor-kit 0.2): `collect` maps the pure `CheckResult`s to kit findings,
+  keeps the old wire output byte-identical (goldens in `tests/golden/`), live scan = `enumerate` over
+  `Central`/`GattClient` behind one `block`, shell tree = services/characteristics — #14
 - `testkit/mod.rs` — no-radio fakes (`FakeCentral`, `FakeGattTree`, `FakeClient`, …) for all tests — #24
 
 ## Build & test

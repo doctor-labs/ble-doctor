@@ -107,3 +107,44 @@ fn fix_builds_a_prompt_from_a_saved_report() {
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.contains("nothing to scan"), "{err}");
 }
+
+#[test]
+fn shell_walks_a_capture_and_needs_a_subject() {
+    let (code, out, err) = run(&[
+        "shell",
+        "--capture",
+        "mac_rotation.pcap",
+        "-c",
+        "ls; cd privacy; ls; pwd",
+    ]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    assert!(
+        out.contains("privacy") && out.contains("mac_rotation") && out.contains("/privacy"),
+        "{out}"
+    );
+    let (code, out, _) = run(&[
+        "shell",
+        "--capture",
+        "mac_rotation.pcap",
+        "--json",
+        "-c",
+        "pwd",
+    ]);
+    assert_eq!(code, 0);
+    let rec: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        (rec["schema"].as_str(), rec["ok"].as_bool()),
+        (Some("doctor-shell/1"), Some(true))
+    );
+    // A capture that cannot be read fails like `analyze` does: exit 2, nothing on stdout.
+    let (code, out, err) = run(&["shell", "--capture", "nope.pcap", "-c", "ls"]);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.starts_with("analyze: "), "{err}");
+    // No target, no capture: a usage error.
+    let (code, _, err) = run(&["shell", "-c", "ls"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--target"), "{err}");
+    let (code, _, err) = run(&["explore"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--target"), "{err}");
+}
