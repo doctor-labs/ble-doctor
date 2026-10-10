@@ -23,6 +23,8 @@ pub enum Subject {
 
 pub struct BleDoctor {
     pub subject: Subject,
+    /// `--adapter`, for the commands that talk to a local adapter.
+    pub adapter: Option<String>,
     /// Print the human preamble (capture summary) to stdout before the report.
     pub say: bool,
     /// The one gathered result: `shell` and `explore` re-scan, a radio must not be hit twice.
@@ -30,9 +32,10 @@ pub struct BleDoctor {
 }
 
 impl BleDoctor {
-    pub fn new(subject: Subject, say: bool) -> Self {
+    pub fn new(subject: Subject, adapter: Option<String>, say: bool) -> Self {
         BleDoctor {
             subject,
+            adapter,
             say,
             cache: Mutex::new(None),
         }
@@ -151,6 +154,29 @@ impl Doctor for BleDoctor {
         serde_json::to_string_pretty(&env.to_value()).expect("report serializes") + "\n"
     }
 
+    /// ble's SARIF (rules with `security-severity`, check order, no trailing newline).
+    fn render_sarif(&self, env: &Envelope) -> String {
+        let cache = self.cache.lock().unwrap();
+        let failed: Vec<_> = cache.iter().flatten().flat_map(|c| &c.findings).collect();
+        let at = failed
+            .first()
+            .filter(|f| f.location.kind == LocationKind::File)
+            .map(|f| f.location.reference.as_str());
+        let doc = crate::sarif::document(
+            &env.score,
+            failed.iter().map(|f| {
+                (
+                    f.id.as_str(),
+                    f.severity,
+                    f.message.as_str(),
+                    f.fingerprint.clone(),
+                )
+            }),
+            at,
+        );
+        serde_json::to_string_pretty(&doc).expect("sarif serializes")
+    }
+
     /// ble's own baseline parsing, kept exactly: a doctor/1 object (a bare array is refused), entries
     /// without a fingerprint are skipped, no size cap, and the message is printed bare.
     fn load_baseline(&self, path: &std::path::Path) -> Result<Saved, ScanFailure> {
@@ -210,6 +236,7 @@ impl Doctor for BleDoctor {
         Ok(())
     }
 
+    /// The gathered findings; messages stay raw (the kit's faces sanitize what people see).
     fn collect(&self, _: &Ctx) -> Result<Collected, ScanFailure> {
         self.cache
             .lock()
@@ -240,6 +267,35 @@ mod tests {
         ]
     }
 
+    /// doctor/1 section 8: the kit's faces strip an attacker-controlled detail, while `--json` keeps
+    /// the raw text it always had.
+    #[test]
+    fn esc_in_a_detail_stays_out_of_the_faces_but_not_the_json() {
+        let evil = "evil\x1b[31mred\u{202e}rtl";
+        let loc = Location::new(LocationKind::Device, "AA");
+        let d = BleDoctor::new(Subject::None, None, false);
+        let r = [CheckResult::new("x", Severity::Low, false, evil)];
+        *d.cache.lock().unwrap() = Some(Ok(collected(&r, &loc, "AA", json!({}))));
+        let env = d
+            .try_scan(&Ctx::detached(Default::default(), Severity::High))
+            .unwrap();
+        for face in [
+            doctor_kit::Face::Plain,
+            doctor_kit::Face::Rich,
+            doctor_kit::Face::Compact,
+        ] {
+            let mut theme = doctor_kit::Theme::default();
+            theme.enabled = false;
+            let t = doctor_kit::face::render(face, &env, &theme);
+            assert!(
+                !t.contains('\x1b') && !t.contains('\u{202e}'),
+                "{face:?}: {t}"
+            );
+        }
+        let v: Value = serde_json::from_str(&d.render_json(&env)).unwrap();
+        assert_eq!(v["findings"][0]["message"], evil);
+    }
+
     /// The kit pipeline reproduces `report::to_envelope` exactly, with and without a baseline.
     #[test]
     fn kit_envelope_equals_report_to_envelope() {
@@ -249,7 +305,7 @@ mod tests {
             json!({"smp": {"seen": false}}),
         );
         let r = results();
-        let d = BleDoctor::new(Subject::None, false);
+        let d = BleDoctor::new(Subject::None, None, false);
         *d.cache.lock().unwrap() = Some(Ok(collected(&r, &loc, dev, extra.clone())));
         let ctx = Ctx::detached(Default::default(), Severity::High);
 
