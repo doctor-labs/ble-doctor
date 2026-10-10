@@ -1,0 +1,4 @@
+exit: 2
+--- stdout ---
+--- stderr ---
+baseline baseline_array.json: not a doctor/1 envelope (re-create it with `--json`)

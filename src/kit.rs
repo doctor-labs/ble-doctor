@@ -9,7 +9,8 @@ use crate::gatt::GattInfo;
 use crate::radio::{select_target_device, Central, DiscoveredDevice, GattClient};
 use crate::report::{coverage_gaps, finding, product_score, sanitize};
 use doctor_core::{Envelope, Location, LocationKind, Score};
-use doctor_kit::baseline::BaselineError;
+use doctor_kit::baseline::Saved;
+use doctor_kit::doctor::PreflightKind;
 use doctor_kit::{Check, Collected, Ctx, Doctor, ScanFailure, TargetKind};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -280,20 +281,7 @@ impl Doctor for BleDoctor {
             c.gaps,
         ))
     }
-    /// `message` is raw here, as ble has always written it (see [`BleDoctor::collect`]).
     fn render_json(&self, env: &Envelope) -> String {
-        let mut env = env.clone();
-        let cache = self.cache.lock().unwrap();
-        for f in &mut env.findings {
-            if let Some(raw) = cache
-                .iter()
-                .flatten()
-                .flat_map(|c| &c.findings)
-                .find(|r| r.fingerprint == f.fingerprint)
-            {
-                f.message.clone_from(&raw.message);
-            }
-        }
         serde_json::to_string_pretty(&env.to_value()).expect("report serializes") + "\n"
     }
 
@@ -320,15 +308,18 @@ impl Doctor for BleDoctor {
         serde_json::to_string_pretty(&doc).expect("sarif serializes")
     }
 
-    fn baseline_message(&self, e: &BaselineError) -> String {
-        sanitize(&match e {
-            BaselineError::Unreadable { path, err } => format!("baseline {path}: {err}"),
-            BaselineError::NotJson { path, err } => format!("baseline {path}: bad JSON: {err}"),
-            BaselineError::NotDoctor1 { path } => {
-                format!("baseline {path}: not a doctor/1 envelope (re-create it with `--json`)")
-            }
-            other => other.to_string(),
+    /// ble's own baseline parsing, kept exactly: a doctor/1 object (a bare array is refused), entries
+    /// without a fingerprint are skipped, no size cap, and the message is printed bare.
+    fn load_baseline(&self, path: &std::path::Path) -> Result<Saved, ScanFailure> {
+        let doc = crate::baseline::load(path).map_err(|e| ScanFailure::plain(sanitize(&e)))?;
+        Ok(Saved {
+            fingerprints: crate::baseline::failed_fingerprints(&doc),
+            doc,
         })
+    }
+    /// Failures raised by the kit's `preflight` print bare, as ble always has.
+    fn preflight_error(&self, _: PreflightKind, msg: String) -> ScanFailure {
+        ScanFailure::plain(msg)
     }
     /// The drift against the baseline on stderr (stdout stays clean for `--json`), in check order.
     fn baseline_hook(&self, saved: &Value, env: &mut Envelope) -> Result<(), ScanFailure> {
@@ -376,19 +367,13 @@ impl Doctor for BleDoctor {
         Ok(())
     }
 
-    /// The gathered findings, with `message` sanitized: the kit's faces and shell print it as is, and
-    /// GATT strings come off the air. `--json` and SARIF still carry the raw text.
+    /// The gathered findings; messages stay raw (the kit's faces sanitize what people see).
     fn collect(&self, _: &Ctx) -> Result<Collected, ScanFailure> {
-        let mut c = self
-            .cache
+        self.cache
             .lock()
             .unwrap()
             .get_or_insert_with(|| self.gather())
-            .clone()?;
-        for f in &mut c.findings {
-            f.message = sanitize(&f.message);
-        }
-        Ok(c)
+            .clone()
     }
 }
 
@@ -506,8 +491,8 @@ mod tests {
         );
     }
 
-    /// doctor/1 section 8: an attacker-controlled detail never reaches the human faces, while
-    /// `--json` keeps the raw text it always had.
+    /// doctor/1 section 8: the kit's faces strip an attacker-controlled detail, while `--json` keeps
+    /// the raw text it always had.
     #[test]
     fn esc_in_a_detail_stays_out_of_the_faces_but_not_the_json() {
         let evil = "evil\x1b[31mred\u{202e}rtl";
