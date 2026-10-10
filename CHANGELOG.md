@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+### Fixed
+- Release assets are one archive per target (`ble-doctor-<target>.tar.gz` / `.zip` plus `.sha256`); 0.3.1 uploaded bare `ble-doctor` binaries that overwrote each other. No code change.
+
 ## 0.3.1
 
 ### Fixed
