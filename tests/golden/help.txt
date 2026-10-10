@@ -86,6 +86,7 @@ Options:
       --from-file <FROM_FILE>    Saved Sniffle text dump to parse instead of live capture
       --json                     Emit JSON
       --write-pcap <WRITE_PCAP>  Also write the session's advertising frames as a pcap (Wireshark/crackle can open it)
+      --fifo <FIFO>              Stream frames live to this named pipe as they're captured (`mkfifo` it first, then `wireshark -k -i <path>`); blocks until a reader opens it, like `btlejack -w`
   -h, --help                     Print help
 ===== ble-doctor fingerprint =====
 Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)

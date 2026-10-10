@@ -198,3 +198,38 @@ fn sniff_write_pcap_is_openable_by_analyze() {
         2
     );
 }
+
+#[test]
+fn sniff_fifo_streams_to_a_real_named_pipe() {
+    let d = scratch("sniff-fifo");
+    let dump = d.join("session.sniffle");
+    std::fs::write(
+        &dump,
+        "BxBAQg8ACwDOJQAJBQQDAgGqAgEG\nBxAAJ7kpCwDOJQAJBQQDAgG7AgEG\n",
+    )
+    .unwrap();
+    let fifo = d.join("live.fifo");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "mkfifo not available"
+    );
+    // `sniff --fifo` blocks opening it for write until something opens it for read: start that
+    // reader first, in its own thread, before running the CLI which does the writing.
+    let reader_fifo = fifo.clone();
+    let reader = std::thread::spawn(move || std::fs::read(&reader_fifo).unwrap());
+    let (code, out, err) = run(&[
+        "sniff",
+        "--from-file",
+        dump.to_str().unwrap(),
+        "--fifo",
+        fifo.to_str().unwrap(),
+    ]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    let bytes = reader.join().unwrap();
+    let info = ble_doctor::capture::parse_capture(&bytes).unwrap();
+    assert_eq!(info.adv_mac_addresses.len(), 2);
+}
