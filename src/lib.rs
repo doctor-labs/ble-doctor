@@ -12,6 +12,7 @@ pub mod fingerprint;
 pub mod gatt;
 pub mod handoff;
 pub mod hci_lmp;
+pub mod kit;
 pub mod mcp;
 pub mod mitm;
 pub mod probe;
