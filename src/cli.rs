@@ -1,8 +1,8 @@
 //! Command-line interface: doctor-kit's `run_with` owns the process, this module registers ble's own
-//! commands next to the kit's. `analyze` reports through the kit; the other commands (scan, probes,
-//! MITM, CTF, fingerprint, sniffer ...) are plain functions over their arguments.
+//! commands next to the kit's. `scan` and `analyze` report through the kit; the other commands
+//! (probes, MITM, CTF, fingerprint, sniffer ...) are plain functions over their arguments.
 
-use crate::kit::{BleDoctor, Subject};
+use crate::kit::{block, print_devices, BleDoctor, Out, Subject};
 use crate::report::sanitize as san;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Arg, ArgMatches, Args, FromArgMatches, Subcommand};
@@ -46,8 +46,8 @@ pub struct ScanArgs {
     #[arg(long, requires = "target")]
     baseline: Option<std::path::PathBuf>,
     /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
-    #[arg(long, default_value = "high", value_parser = SEVERITIES)]
-    fail_on: String,
+    #[arg(long, default_value = "high", value_parser = severity())]
+    fail_on: Severity,
 }
 
 #[derive(Args, Debug)]
@@ -324,12 +324,12 @@ fn findings(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
     Ok(kit_finish(bd, pre, bd.try_scan(&ctx), &o))
 }
 
-/// `analyze`: ble's own arguments plus the kit's presentation flags (`--theme-file` is left out:
-/// no theme file is looked up next to a capture).
-fn analyze_command() -> clap::Command {
+/// A findings command: ble's own arguments plus the kit's presentation flags (`--theme-file` is
+/// left out: nothing is looked up next to a capture or a radio).
+fn findings_command<A: Args>(name: &'static str, order: usize) -> clap::Command {
     let own = ["json", "sarif", "baseline", "fail_on", "theme_file"];
-    AnalyzeArgs::augment_args(clap::Command::new("analyze"))
-        .about(about("analyze"))
+    A::augment_args(clap::Command::new(name))
+        .about(about(name))
         .args(
             OutputArgs::args_with(Severity::High)
                 .into_iter()
@@ -343,7 +343,7 @@ fn analyze_command() -> clap::Command {
                     .map(|s| <Face as clap::ValueEnum>::from_str(&s, true).expect("listed face")),
             )
         })
-        .display_order(1)
+        .display_order(order)
 }
 
 /// ble's commands, in the order `--help` has always listed them.
@@ -359,9 +359,12 @@ pub fn extensions() -> Extensions<BleDoctor> {
         };
     Extensions {
         commands: vec![
-            ext!(0, "scan", ScanArgs, scan),
             ExtCommand {
-                command: analyze_command(),
+                command: findings_command::<ScanArgs>("scan", 0),
+                run: scan,
+            },
+            ExtCommand {
+                command: findings_command::<AnalyzeArgs>("analyze", 1),
                 run: findings,
             },
             ext!(2, "sniff", SniffArgs, sniff),
@@ -398,7 +401,8 @@ pub fn extensions() -> Extensions<BleDoctor> {
     }
 }
 
-/// The doctor, from the parsed command line: the adapter, and the capture for `analyze`.
+/// The doctor, from the parsed command line: the adapter and the subject (a capture for `analyze`,
+/// the target for `scan`; `$BLE_DOCTOR_TARGET` for the kit's `fix`, `shell` and `explore`).
 fn build(m: &ArgMatches) -> Result<BleDoctor, String> {
     let sub = m.subcommand();
     let flag = |id: &str| {
@@ -409,45 +413,50 @@ fn build(m: &ArgMatches) -> Result<BleDoctor, String> {
         .and_then(|(_, s)| s.try_get_one::<String>("adapter").ok().flatten())
         .or_else(|| m.try_get_one::<String>("adapter").ok().flatten())
         .cloned();
+    let live = |target: Option<String>, timeout: u64| {
+        target
+            .filter(|t| !t.is_empty())
+            .map_or(Subject::None, |target| Subject::Live { target, timeout })
+    };
     let subject = match sub {
         Some(("analyze", s)) => Subject::Capture(
             s.get_one::<std::path::PathBuf>("capture")
                 .cloned()
                 .unwrap_or_default(),
         ),
-        _ => Subject::None,
+        Some(("scan", s)) => live(
+            s.get_one::<String>("target").cloned(),
+            s.get_one::<u64>("timeout").copied().unwrap_or(5),
+        ),
+        _ => live(std::env::var("BLE_DOCTOR_TARGET").ok(), 5),
     };
-    Ok(BleDoctor::new(
-        subject,
-        adapter,
-        !flag("json") && !flag("score"),
-    ))
+    let out = match (flag("json") || flag("score"), flag("tui")) {
+        (true, _) => Out::Machine,
+        (_, true) => Out::Quiet,
+        _ => Out::Human,
+    };
+    Ok(BleDoctor::new(subject, adapter, out))
 }
 
 /// The whole CLI.
 pub fn run() -> ExitCode {
-    let meta = Meta::of(&BleDoctor::new(Subject::None, None, false));
+    let meta = Meta::of(&BleDoctor::new(Subject::None, None, Out::Quiet));
     doctor_kit::run_with(meta, extensions(), build)
 }
 
-fn scan(bd: &BleDoctor, args: &ScanArgs) -> Result<u8, String> {
+/// `scan`: the two raw-radio modes and the bare device list are ble's own; with a target the
+/// findings go through the kit (`--tui` opens the kit's explorer first).
+fn scan(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
     let ScanArgs {
         target,
         timeout,
         mtu,
         as_address,
-        json,
         tui,
-        sarif,
-        baseline,
-        fail_on,
-    } = args;
-    if let (Some(t), Some(a)) = (target, as_address) {
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(crate::radio::raw::set_random_address_and_connect(a, t))
-        });
-        match res {
+        ..
+    } = ScanArgs::from_arg_matches(m).map_err(|e| e.to_string())?;
+    if let (Some(t), Some(a)) = (&target, &as_address) {
+        match block(crate::radio::raw::set_random_address_and_connect(a, t)) {
             Ok(()) => println!("connected to {t} as {a}"),
             Err(e) => {
                 eprintln!("as-address: {e}\n  fix: {}", e.remediation());
@@ -456,11 +465,8 @@ fn scan(bd: &BleDoctor, args: &ScanArgs) -> Result<u8, String> {
         }
         return Ok(0);
     }
-    if let (Some(t), Some(m)) = (target, mtu) {
-        let res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(crate::radio::raw::request_exact_mtu(t, *m))
-        });
-        match res {
+    if let (Some(t), Some(mtu)) = (&target, mtu) {
+        match block(crate::radio::raw::request_exact_mtu(t, mtu)) {
             Ok(n) => println!("negotiated MTU: {n}"),
             Err(e) => {
                 eprintln!("mtu: {e}\n  fix: {}", e.remediation());
@@ -469,153 +475,29 @@ fn scan(bd: &BleDoctor, args: &ScanArgs) -> Result<u8, String> {
         }
         return Ok(0);
     }
-    use crate::radio::{select_target_device, BtleplugCentral, Central};
-    let dur = std::time::Duration::from_secs(*timeout);
-    let res = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(BtleplugCentral.scan(dur))
-    });
-    match res {
-        Ok(devs) => {
-            // --json: stdout carries only the envelope, so the device list goes to stderr.
-            for d in &devs {
-                let line = format!(
-                    "{}  addr={} name={} adv={} rssi={}",
-                    crate::report::sanitize(&d.id),
-                    d.address.as_deref().unwrap_or("-"),
-                    crate::report::sanitize(d.name.as_deref().unwrap_or("-")),
-                    crate::report::sanitize(d.adv_local_name.as_deref().unwrap_or("-")),
-                    d.rssi.map_or("-".into(), |r| r.to_string())
-                );
-                if *json {
-                    eprintln!("{line}");
-                } else {
-                    println!("{line}");
-                }
-            }
-            if let Some(t) = target {
-                match select_target_device(&devs, t) {
-                    Ok(d) => {
-                        if !*json {
-                            println!("selected: {}", crate::report::sanitize(&d.id));
-                        }
-                        let id = d.id.clone();
-                        let dev = d.clone();
-                        let name = d.adv_local_name.clone().or_else(|| d.name.clone());
-                        let gi = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(async {
-                                use crate::radio::{connect_client, GattClient};
-                                let c = connect_client(bd.adapter.as_deref(), &dev, dur).await?;
-                                let s = c.services().await?;
-                                Ok::<_, crate::error::BleError>(crate::gatt::extract_gatt_fields(
-                                    &s,
-                                    &id,
-                                    name.as_deref(),
-                                ))
-                            })
-                        });
-                        match gi {
-                            Ok(g) => {
-                                let checks = [
-                                    crate::checks::check_unauthenticated_writes(&g),
-                                    crate::checks::check_dfu_entry_point(&g),
-                                    crate::checks::check_dfu_signing_enforced(&g),
-                                    crate::checks::check_dfu_surface_absent(&g),
-                                ];
-                                let loc = doctor_core::Location::new(
-                                    doctor_core::LocationKind::Device,
-                                    t.as_str(),
-                                );
-                                if *json {
-                                    let code = emit(
-                                        &checks,
-                                        &loc,
-                                        t,
-                                        serde_json::json!({}),
-                                        true,
-                                        sarif,
-                                        baseline,
-                                        fail_on,
-                                        None,
-                                    );
-                                    if code != 0 {
-                                        std::process::exit(code);
-                                    }
-                                    return Ok(0);
-                                }
-                                if *tui {
-                                    let score = crate::report::compute_score(&checks);
-                                    if let Err(e) = crate::tui::run_tui(score, &checks) {
-                                        eprintln!("tui: {e}");
-                                        fail();
-                                    }
-                                    let code = emit(
-                                        &checks,
-                                        &loc,
-                                        t,
-                                        serde_json::json!({}),
-                                        false,
-                                        sarif,
-                                        baseline,
-                                        fail_on,
-                                        None,
-                                    );
-                                    if code != 0 {
-                                        std::process::exit(code);
-                                    }
-                                    return Ok(0);
-                                }
-                                println!(
-                                    "gatt: {} services, {} writable, {} subscribable",
-                                    g.service_uuids.len(),
-                                    g.writable_chars.len(),
-                                    g.subscribe_chars.len()
-                                );
-                                for w in &g.writable_chars {
-                                    println!(
-                                        "  write {} requires_bonding={} ({})",
-                                        san(&w.uuid),
-                                        w.requires_bonding,
-                                        san(&w.bonding_basis)
-                                    );
-                                }
-                                for s in &g.subscribe_chars {
-                                    println!("  notify {} cccd={:?}", san(&s.uuid), s.cccd);
-                                }
-                                let human = format!("\n{}", crate::report::to_table(&checks));
-                                let code = emit(
-                                    &checks,
-                                    &loc,
-                                    t,
-                                    serde_json::json!({}),
-                                    false,
-                                    sarif,
-                                    baseline,
-                                    fail_on,
-                                    Some(&human),
-                                );
-                                if code != 0 {
-                                    std::process::exit(code);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("gatt: {e}\n  fix: {}", e.remediation());
-                                fail();
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("scan: {e}");
-                        fail();
-                    }
-                }
+    if target.is_none() {
+        use crate::radio::{BtleplugCentral, Central};
+        match block(BtleplugCentral.scan(std::time::Duration::from_secs(timeout))) {
+            Ok(devs) => print_devices(&devs, Out::Human),
+            Err(e) => {
+                eprintln!("scan: {e}\n  fix: {}", e.remediation());
+                fail();
             }
         }
-        Err(e) => {
-            eprintln!("scan: {e}\n  fix: {}", e.remediation());
+        return Ok(0);
+    }
+    if tui {
+        // Scan first so a failure is reported as ever, then explore the cached result.
+        let ctx = Ctx::detached(Default::default(), Severity::High);
+        if let Err(f) = bd.try_scan(&ctx) {
+            return Ok(doctor_kit::output::report_failure(bd, &f));
+        }
+        if let Err(e) = doctor_kit::tui::run(bd, ctx) {
+            eprintln!("tui: {e}");
             fail();
         }
     }
-    Ok(0)
+    findings(bd, m)
 }
 
 fn sniff(_: &BleDoctor, args: &SniffArgs) -> Result<u8, String> {
@@ -1191,59 +1073,6 @@ fn fail() -> ! {
     std::process::exit(2)
 }
 
-/// Shared tail of the findings commands (scan, analyze): baseline, exit code, SARIF, output.
-/// Prints the envelope (`json`) or `human` (plus the baseline diff on stderr); returns the exit code.
-#[allow(clippy::too_many_arguments)]
-fn emit(
-    checks: &[crate::checks::CheckResult],
-    loc: &doctor_core::Location,
-    device: &str,
-    extra: serde_json::Value,
-    json: bool,
-    sarif: &Option<std::path::PathBuf>,
-    baseline: &Option<std::path::PathBuf>,
-    fail_on: &str,
-    human: Option<&str>,
-) -> i32 {
-    use crate::baseline;
-    let sev = crate::checks::Severity::parse(fail_on).expect("clap-validated");
-    let base = match baseline.as_deref().map(baseline::load).transpose() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("{}", crate::report::sanitize(&e));
-            fail();
-        }
-    };
-    let diff = base.as_ref().map(|b| baseline::diff(checks, b, device));
-    let code = crate::report::gate_exit(
-        checks,
-        sev,
-        diff.as_ref().map(|d| d.new_failures.as_slice()),
-    );
-    let env = crate::report::to_envelope(checks, loc, device, base.as_ref(), code, extra);
-    if let Some(path) = sarif {
-        let v = crate::sarif::to_sarif(
-            &crate::report::score(checks),
-            checks,
-            (loc.kind == doctor_core::LocationKind::File).then_some(loc.reference.as_str()),
-            device,
-        );
-        if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap()) {
-            eprintln!("sarif: {}: {e}", path.display());
-            fail();
-        }
-    }
-    if let Some(d) = &diff {
-        baseline::report_diff(d);
-    }
-    if json {
-        println!("{}", crate::report::to_json(&env));
-    } else if let Some(h) = human {
-        println!("{h}");
-    }
-    code
-}
-
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) {
         return Err(format!("odd-length hex string: {s:?}"));
@@ -1332,7 +1161,7 @@ mod tests {
 
     #[test]
     fn clap_command_is_valid() {
-        let meta = Meta::of(&BleDoctor::new(Subject::None, None, false));
+        let meta = Meta::of(&BleDoctor::new(Subject::None, None, Out::Quiet));
         doctor_kit::command_with(&meta, &extensions()).debug_assert();
     }
 

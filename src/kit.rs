@@ -1,16 +1,22 @@
-//! ble-doctor on doctor-kit: one `Doctor` for the findings subjects (a capture file; a live device
-//! joins in a later step). The checks stay pure functions returning `CheckResult`; [`collected`] maps
-//! their results onto kit findings, byte for byte what `report::to_envelope` builds.
+//! ble-doctor on doctor-kit: one `Doctor` for the findings subjects (a capture file, a live device).
+//! The checks stay pure functions returning `CheckResult`; [`collected`] maps their results onto kit
+//! findings, byte for byte what `report::to_envelope` builds. The one async-to-sync bridge of the
+//! findings path is [`block`]; everything around the radio is generic over `Central`/`GattClient`.
 
 use crate::checks::CheckResult;
+use crate::error::BleError;
+use crate::gatt::GattInfo;
+use crate::radio::{select_target_device, Central, DiscoveredDevice, GattClient};
 use crate::report::{coverage_gaps, finding, product_score, sanitize};
 use doctor_core::{Envelope, Location, LocationKind, Score};
 use doctor_kit::baseline::BaselineError;
 use doctor_kit::{Check, Collected, Ctx, Doctor, ScanFailure, TargetKind};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 /// What a run looks at. The kit walks no directory for it (`TargetKind::Detached`).
 pub enum Subject {
@@ -18,24 +24,115 @@ pub enum Subject {
     None,
     /// One btsnoop/pcap capture.
     Capture(PathBuf),
+    /// A live device: scan for `target` (address, id or name), connect, enumerate GATT.
+    Live { target: String, timeout: u64 },
+}
+
+/// Where the human chatter (device list, summaries) goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Out {
+    /// A person reads stdout: chatter on stdout, then the face.
+    Human,
+    /// stdout is reserved for the envelope (`--json`, `--score`): chatter on stderr.
+    Machine,
+    /// A full-screen UI or a shell owns the terminal: no chatter.
+    Quiet,
+}
+
+/// Run a future from the synchronous kit pipeline. `main` is `#[tokio::main]` (multi-thread), so
+/// blocking the current worker is allowed; this is the only bridge the findings path needs.
+pub fn block<F: Future>(f: F) -> F::Output {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f))
+}
+
+/// One line per device seen: stdout for people, stderr when stdout carries the envelope.
+pub fn print_devices(devs: &[DiscoveredDevice], out: Out) {
+    for d in devs {
+        let line = format!(
+            "{}  addr={} name={} adv={} rssi={}",
+            sanitize(&d.id),
+            d.address.as_deref().unwrap_or("-"),
+            sanitize(d.name.as_deref().unwrap_or("-")),
+            sanitize(d.adv_local_name.as_deref().unwrap_or("-")),
+            d.rssi.map_or("-".into(), |r| r.to_string())
+        );
+        match out {
+            Out::Human => println!("{line}"),
+            Out::Machine => eprintln!("{line}"),
+            Out::Quiet => {}
+        }
+    }
+}
+
+fn failure(stderr: String) -> ScanFailure {
+    ScanFailure {
+        exit: 2,
+        stderr,
+        envelope: None,
+    }
+}
+
+/// Scan, pick `target`, connect, read the GATT tree. The errors are the ones `scan` has always
+/// printed (`scan: ..`, `gatt: ..`, each with its remediation where there is one).
+pub async fn enumerate<C, G, F>(
+    central: &C,
+    connect: impl FnOnce(DiscoveredDevice) -> F,
+    target: &str,
+    dur: Duration,
+    out: Out,
+) -> Result<GattInfo, ScanFailure>
+where
+    C: Central,
+    G: GattClient,
+    F: Future<Output = Result<G, BleError>>,
+{
+    let with_fix =
+        |what: &str, e: BleError| failure(format!("{what}: {e}\n  fix: {}\n", e.remediation()));
+    let devs = central.scan(dur).await.map_err(|e| with_fix("scan", e))?;
+    print_devices(&devs, out);
+    let d = select_target_device(&devs, target).map_err(|e| failure(format!("scan: {e}\n")))?;
+    if out == Out::Human {
+        println!("selected: {}", sanitize(&d.id));
+    }
+    let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+    let id = d.id.clone();
+    let client = connect(d.clone()).await.map_err(|e| with_fix("gatt", e))?;
+    let services = client.services().await.map_err(|e| with_fix("gatt", e))?;
+    Ok(crate::gatt::extract_gatt_fields(
+        &services,
+        &id,
+        name.as_deref(),
+    ))
+}
+
+/// The four live checks over an enumerated device, as findings. The fingerprint identity is `target`
+/// exactly as given.
+pub fn live_collected(g: &GattInfo, target: &str) -> Collected {
+    let checks = [
+        crate::checks::check_unauthenticated_writes(g),
+        crate::checks::check_dfu_entry_point(g),
+        crate::checks::check_dfu_signing_enforced(g),
+        crate::checks::check_dfu_surface_absent(g),
+    ];
+    let loc = Location::new(LocationKind::Device, target);
+    collected(&checks, &loc, target, json!({}))
 }
 
 pub struct BleDoctor {
     pub subject: Subject,
     /// `--adapter`, for the commands that talk to a local adapter.
     pub adapter: Option<String>,
-    /// Print the human preamble (capture summary) to stdout before the report.
-    pub say: bool,
+    pub out: Out,
     /// The one gathered result: `shell` and `explore` re-scan, a radio must not be hit twice.
     cache: Mutex<Option<Result<Collected, ScanFailure>>>,
 }
 
 impl BleDoctor {
-    pub fn new(subject: Subject, adapter: Option<String>, say: bool) -> Self {
+    pub fn new(subject: Subject, adapter: Option<String>, out: Out) -> Self {
         BleDoctor {
             subject,
             adapter,
-            say,
+            out,
             cache: Mutex::new(None),
         }
     }
@@ -46,7 +143,41 @@ impl BleDoctor {
                 "nothing to scan: pass `--from <report.json>`, or a subject on the command",
             )),
             Subject::Capture(path) => self.gather_capture(path),
+            Subject::Live { target, timeout } => self.gather_live(target, *timeout),
         }
+    }
+
+    fn gather_live(&self, target: &str, timeout: u64) -> Result<Collected, ScanFailure> {
+        use crate::radio::{connect_client, BtleplugCentral};
+        let dur = Duration::from_secs(timeout);
+        let adapter = self.adapter.as_deref();
+        let g = block(enumerate(
+            &BtleplugCentral,
+            |d| async move { connect_client(adapter, &d, dur).await },
+            target,
+            dur,
+            self.out,
+        ))?;
+        if self.out == Out::Human {
+            println!(
+                "gatt: {} services, {} writable, {} subscribable",
+                g.service_uuids.len(),
+                g.writable_chars.len(),
+                g.subscribe_chars.len()
+            );
+            for w in &g.writable_chars {
+                println!(
+                    "  write {} requires_bonding={} ({})",
+                    sanitize(&w.uuid),
+                    w.requires_bonding,
+                    sanitize(&w.bonding_basis)
+                );
+            }
+            for s in &g.subscribe_chars {
+                println!("  notify {} cccd={:?}", sanitize(&s.uuid), s.cccd);
+            }
+        }
+        Ok(live_collected(&g, target))
     }
 
     fn gather_capture(&self, path: &std::path::Path) -> Result<Collected, ScanFailure> {
@@ -70,7 +201,7 @@ impl BleDoctor {
         } else {
             ""
         };
-        if self.say {
+        if self.out == Out::Human {
             println!(
                 "capture: {} ({} adv frames)",
                 sanitize(info.capture_flavour.as_deref().unwrap_or("unknown")),
@@ -282,13 +413,106 @@ mod tests {
         ]
     }
 
+    fn device(id: &str, addr: &str) -> DiscoveredDevice {
+        DiscoveredDevice {
+            id: id.into(),
+            address: Some(addr.into()),
+            adv_local_name: Some("Fake".into()),
+            ..Default::default()
+        }
+    }
+
+    /// The live path without a radio: scan -> select -> connect -> GATT -> the four checks.
+    #[tokio::test]
+    async fn live_enumeration_over_the_fakes() {
+        use crate::testkit::{FakeCentral, FakeCharacteristic, FakeClient, FakeGattTree};
+        const SVC: &str = "0000aaa0-0000-1000-8000-00805f9b34fb";
+        let tree = FakeGattTree::new().service(
+            SVC,
+            vec![FakeCharacteristic::new(
+                "0000aaa1-0000-1000-8000-00805f9b34fb",
+                SVC,
+                &["write"],
+            )],
+        );
+        let target = "AA:BB:CC:DD:EE:FF";
+        let central = FakeCentral::new(vec![
+            device("dev-1", target),
+            device("dev-2", "11:22:33:44:55:66"),
+        ]);
+        let g = enumerate(
+            &central,
+            |_| async { Ok(FakeClient::new(tree.clone())) },
+            target,
+            Duration::from_secs(1),
+            Out::Quiet,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            g.service_uuids,
+            crate::gatt::extract_gatt_fields(&tree.to_services(), "dev-1", Some("Fake"))
+                .service_uuids
+        );
+        let c = live_collected(&g, target);
+        let ids: Vec<&str> = c.findings.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, ["unauthenticated_writes"]);
+        assert_eq!(c.findings[0].location.kind, LocationKind::Device);
+        assert_eq!(c.findings[0].location.reference, target);
+        assert_eq!(c.data["passed"].as_array().unwrap().len(), 3);
+    }
+
+    /// The three live failures keep the text and the exit code `scan` has always had.
+    #[tokio::test]
+    async fn live_failures_print_as_before() {
+        use crate::testkit::{FakeCentral, FakeClient};
+        let one = |c: FakeCentral, connect_fails: bool| async move {
+            enumerate(
+                &c,
+                |_| async move {
+                    if connect_fails {
+                        Err(BleError::ConnectTimeout)
+                    } else {
+                        Ok(FakeClient::default())
+                    }
+                },
+                "AA:BB:CC:DD:EE:FF",
+                Duration::from_secs(1),
+                Out::Quiet,
+            )
+            .await
+            .unwrap_err()
+        };
+        let f = one(FakeCentral::failing(BleError::PermissionDenied), false).await;
+        let want = BleError::PermissionDenied;
+        assert_eq!(
+            (f.exit, f.stderr),
+            (2, format!("scan: {want}\n  fix: {}\n", want.remediation()))
+        );
+        let f = one(FakeCentral::new(vec![]), false).await;
+        assert_eq!(
+            (f.exit, f.stderr),
+            (2, format!("scan: {}\n", BleError::DeviceNotFound))
+        );
+        let f = one(
+            FakeCentral::new(vec![device("d", "AA:BB:CC:DD:EE:FF")]),
+            true,
+        )
+        .await;
+        let want = BleError::ConnectTimeout;
+        assert_eq!(
+            (f.exit, f.stderr),
+            (2, format!("gatt: {want}\n  fix: {}\n", want.remediation()))
+        );
+    }
+
     /// doctor/1 section 8: an attacker-controlled detail never reaches the human faces, while
     /// `--json` keeps the raw text it always had.
     #[test]
     fn esc_in_a_detail_stays_out_of_the_faces_but_not_the_json() {
         let evil = "evil\x1b[31mred\u{202e}rtl";
         let loc = Location::new(LocationKind::Device, "AA");
-        let d = BleDoctor::new(Subject::None, None, false);
+        let d = BleDoctor::new(Subject::None, None, Out::Quiet);
         let r = [CheckResult::new("x", Severity::Low, false, evil)];
         *d.cache.lock().unwrap() = Some(Ok(collected(&r, &loc, "AA", json!({}))));
         let env = d
@@ -320,7 +544,7 @@ mod tests {
             json!({"smp": {"seen": false}}),
         );
         let r = results();
-        let d = BleDoctor::new(Subject::None, None, false);
+        let d = BleDoctor::new(Subject::None, None, Out::Quiet);
         *d.cache.lock().unwrap() = Some(Ok(collected(&r, &loc, dev, extra.clone())));
         let ctx = Ctx::detached(Default::default(), Severity::High);
 

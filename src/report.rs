@@ -137,20 +137,6 @@ pub fn to_json(envelope: &Value) -> String {
     serde_json::to_string_pretty(envelope).expect("report serializes")
 }
 
-pub fn to_table(results: &[CheckResult]) -> String {
-    let mut out = format!("BLE Doctor - score: {}/100\n", compute_score(results));
-    for r in results {
-        let mark = if r.passed { "PASS" } else { "FAIL" };
-        out.push_str(&format!(
-            "\n[{mark}] {} ({}): {}",
-            sanitize(&r.id),
-            r.severity.as_str(),
-            sanitize(&r.detail)
-        ));
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,12 +189,10 @@ mod tests {
         assert_eq!(v["score"]["label"], "needs work");
         assert_eq!(v["findings"].as_array().unwrap().len(), 1);
         assert_eq!(v["data"]["passed"][0]["id"], "ok");
-        assert!(to_table(&r).contains("[FAIL] x (high): d"));
         assert_eq!(gate_exit(&r, Severity::High, None), 1);
         assert_eq!(gate_exit(&r, Severity::Critical, None), 0);
     }
 
-    /// doctor/1 section 8: an ESC sequence in an attacker-controlled detail never reaches the table.
     #[test]
     fn explicit_inconclusive_flag_counts_as_coverage_gap() {
         let r = [
@@ -221,18 +205,5 @@ mod tests {
             ),
         ];
         assert_eq!(coverage_gaps(&r), 1);
-    }
-
-    #[test]
-    fn esc_does_not_reach_human_output() {
-        let r = [CheckResult::new(
-            "x",
-            Severity::Low,
-            false,
-            "evil\x1b[31mred\u{202e}rtl\u{200b}",
-        )];
-        let t = to_table(&r);
-        assert!(!t.contains('\x1b') && !t.contains('\u{202e}') && !t.contains('\u{200b}'));
-        assert!(t.contains("evil[31mred"));
     }
 }
