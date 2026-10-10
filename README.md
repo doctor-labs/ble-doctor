@@ -41,6 +41,7 @@ From source: `cargo build --release` (Linux needs `libdbus-1-dev` and `pkg-confi
 | Command | What it does |
 |---|---|
 | `ble-doctor scan --target <addr>` | Scan, connect and score a device (`--json`, `--sarif FILE`, `--baseline FILE`, `--fail-on SEV`, `--tui` opens the explorer first) |
+| `ble-doctor scan` (no `--target`) | List nearby devices live, as each is first seen; `--sort rssi\|name\|address` prints a sorted recap once the window closes |
 | `ble-doctor analyze <capture>` | Score a btsnoop/pcap capture, including SMP pairing (`--json`, `--sarif`, `--baseline`, `--fail-on`, `--irk HEX` to resolve RPAs you hold the IRK for) |
 | `ble-doctor shell --target <addr>` / `--capture <file>` | Interactive shell over the findings and the device's services (`ls`, `cd`, `cat`, `why`, `export`; `-c "ls; cat 1"`, `--json` for agents); over a live target also `read`, `write`, `recon`, `probe-writes` |
 | `ble-doctor explore --target <addr>` / `--capture <file>` | Full-screen explorer over the same session |

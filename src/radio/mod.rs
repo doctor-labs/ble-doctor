@@ -34,6 +34,58 @@ pub struct DiscoveredDevice {
 #[allow(async_fn_in_trait)]
 pub trait Central {
     async fn scan(&self, timeout: Duration) -> Result<Vec<DiscoveredDevice>, BleError>;
+
+    /// `scan`, but `on_device` is called as each device is (first) seen rather than only once at
+    /// the end — bettercap's `ble.recon`/`ble.show`. Default (every fake, every other backend):
+    /// one batch `scan`, `on_device` called once per device in the returned order — observably
+    /// the same as calling `scan` and iterating the result. Only `BtleplugCentral` overrides this
+    /// with real incremental discovery.
+    async fn scan_live(
+        &self,
+        timeout: Duration,
+        mut on_device: impl FnMut(&DiscoveredDevice),
+    ) -> Result<Vec<DiscoveredDevice>, BleError> {
+        let devs = self.scan(timeout).await?;
+        for d in &devs {
+            on_device(d);
+        }
+        Ok(devs)
+    }
+}
+
+/// How `scan --sort` orders the device list (bettercap `ble.show`'s default is by RSSI).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    /// Strongest signal first; a device with no RSSI sorts last.
+    Rssi,
+    Name,
+    Address,
+}
+
+impl std::str::FromStr for SortKey {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "rssi" => Ok(SortKey::Rssi),
+            "name" => Ok(SortKey::Name),
+            "address" => Ok(SortKey::Address),
+            other => Err(format!(
+                "unknown sort key `{other}` (want rssi, name or address)"
+            )),
+        }
+    }
+}
+
+/// `devs` ordered by `by`, stable otherwise (ties keep their scan order).
+pub fn sort_devices(devs: &mut [DiscoveredDevice], by: SortKey) {
+    match by {
+        SortKey::Rssi => devs.sort_by_key(|d| std::cmp::Reverse(d.rssi.unwrap_or(i16::MIN))),
+        SortKey::Name => devs.sort_by(|a, b| {
+            let n = |d: &DiscoveredDevice| d.adv_local_name.clone().or_else(|| d.name.clone());
+            n(a).cmp(&n(b))
+        }),
+        SortKey::Address => devs.sort_by(|a, b| a.address.cmp(&b.address)),
+    }
 }
 
 /// btleplug-backed central using the first adapter.
@@ -55,6 +107,21 @@ fn map_err(e: btleplug::Error) -> BleError {
         other => BleError::OsError {
             context: other.to_string(),
         },
+    }
+}
+
+/// `btleplug::api::Peripheral::id()` + its `properties()` -> `DiscoveredDevice`.
+fn to_discovered(id: String, props: btleplug::api::PeripheralProperties) -> DiscoveredDevice {
+    let addr = props.address.to_string();
+    DiscoveredDevice {
+        id,
+        // CoreBluetooth reports 00:00:00:00:00:00
+        address: (addr != "00:00:00:00:00:00").then_some(addr),
+        name: None,
+        adv_local_name: props.local_name,
+        rssi: props.rssi,
+        manufacturer_data: props.manufacturer_data.into_iter().collect(),
+        service_uuids: props.services.iter().map(|u| u.to_string()).collect(),
     }
 }
 
@@ -80,19 +147,60 @@ impl Central for BtleplugCentral {
             let Some(props) = p.properties().await.map_err(map_err)? else {
                 continue;
             };
-            let addr = props.address.to_string();
-            out.push(DiscoveredDevice {
-                id: p.id().to_string(),
-                // CoreBluetooth reports 00:00:00:00:00:00
-                address: (addr != "00:00:00:00:00:00").then_some(addr),
-                name: None,
-                adv_local_name: props.local_name.clone(),
-                rssi: props.rssi,
-                manufacturer_data: props.manufacturer_data.into_iter().collect(),
-                service_uuids: props.services.iter().map(|u| u.to_string()).collect(),
-            });
+            out.push(to_discovered(p.id().to_string(), props));
         }
         Ok(out)
+    }
+
+    /// Real incremental discovery: `on_device` fires (once per id, on its first sighting) as
+    /// `CentralEvent::DeviceDiscovered`/`DeviceUpdated` events arrive during `timeout`, instead
+    /// of only after the whole window elapses.
+    async fn scan_live(
+        &self,
+        timeout: Duration,
+        mut on_device: impl FnMut(&DiscoveredDevice),
+    ) -> Result<Vec<DiscoveredDevice>, BleError> {
+        use btleplug::api::{
+            Central as _, CentralEvent, Manager as _, Peripheral as _, ScanFilter,
+        };
+        use futures::StreamExt;
+        let manager = btleplug::platform::Manager::new().await.map_err(map_err)?;
+        let adapter = manager
+            .adapters()
+            .await
+            .map_err(map_err)?
+            .into_iter()
+            .next()
+            .ok_or(BleError::AdapterNotFound)?;
+        let mut events = adapter.events().await.map_err(map_err)?;
+        adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .map_err(map_err)?;
+        let mut seen: BTreeMap<String, DiscoveredDevice> = BTreeMap::new();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let ev = tokio::select! {
+                () = tokio::time::sleep_until(deadline) => break,
+                ev = events.next() => ev,
+            };
+            let id = match ev {
+                Some(CentralEvent::DeviceDiscovered(id) | CentralEvent::DeviceUpdated(id)) => id,
+                Some(_) => continue,
+                None => break,
+            };
+            let Ok(p) = adapter.peripheral(&id).await else {
+                continue;
+            };
+            let Ok(Some(props)) = p.properties().await else {
+                continue;
+            };
+            let d = to_discovered(id.to_string(), props);
+            on_device(&d);
+            seen.insert(d.id.clone(), d);
+        }
+        let _ = adapter.stop_scan().await;
+        Ok(seen.into_values().collect())
     }
 }
 
@@ -469,5 +577,65 @@ mod tests {
         let f = Fake(sample());
         let found = f.scan(Duration::ZERO).await.unwrap();
         assert_eq!(select_target_device(&found, "ThermoAdv").unwrap().id, U1);
+    }
+
+    /// The default `scan_live` (every fake, every non-btleplug backend): one batch `scan`,
+    /// `on_device` called once per device, same order `scan` returns.
+    #[tokio::test]
+    async fn default_scan_live_calls_back_once_per_device_in_scan_order() {
+        let f = Fake(sample());
+        let mut seen = Vec::new();
+        let devs = f
+            .scan_live(Duration::ZERO, |d| seen.push(d.id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(seen, devs.iter().map(|d| d.id.clone()).collect::<Vec<_>>());
+        assert_eq!(seen, [U1, U2, "x3"]);
+    }
+
+    #[test]
+    fn sort_key_parses_or_errors() {
+        assert_eq!("rssi".parse(), Ok(SortKey::Rssi));
+        assert_eq!("name".parse(), Ok(SortKey::Name));
+        assert_eq!("address".parse(), Ok(SortKey::Address));
+        assert!("loudest".parse::<SortKey>().is_err());
+    }
+
+    #[test]
+    fn sort_devices_by_each_key() {
+        let mut d = vec![
+            DiscoveredDevice {
+                rssi: Some(-80),
+                ..dev("a", Some("11:11:11:11:11:11"), Some("Zeta"), None)
+            },
+            DiscoveredDevice {
+                rssi: Some(-40),
+                ..dev("b", Some("00:00:00:00:00:00"), Some("Alpha"), None)
+            },
+            DiscoveredDevice {
+                rssi: Some(-60),
+                ..dev("c", None, None, None)
+            },
+        ];
+        let mut rssi = d.clone();
+        sort_devices(&mut rssi, SortKey::Rssi);
+        assert_eq!(
+            rssi.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            ["b", "c", "a"],
+            "strongest first, no-rssi last"
+        );
+        let mut name = d.clone();
+        sort_devices(&mut name, SortKey::Name);
+        assert_eq!(
+            name.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            ["c", "b", "a"],
+            "None < Some(\"Alpha\") < Some(\"Zeta\")"
+        );
+        sort_devices(&mut d, SortKey::Address);
+        assert_eq!(
+            d.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            ["c", "b", "a"],
+            "None < Some(\"00:...\") < Some(\"11:...\")"
+        );
     }
 }
