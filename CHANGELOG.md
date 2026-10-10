@@ -8,6 +8,12 @@
   addresses resolve to a given IRK (one device's legitimately-rotating RPA, not several distinct
   devices) (#94). New `src/rpa.rs` (`ah`, `resolves`), verified against the Linux kernel's
   `smp_ah` self-test vector (Core Spec Vol 3 Part H 2.2.2); new `aes` dependency.
+- `shell`/`explore`'s REPL gains `read [uuid]`, `write <uuid> <hex> [--yes]` (write-then-read-back),
+  `recon` and `probe-writes [--yes]`: active ops against the session's own live target, no need to
+  repeat `--target` (#96). Each is a fresh connect/act/disconnect reusing the existing standalone
+  subcommands' logic (same safety gating: `write`/`probe-writes` need `--yes`, firmware/DFU
+  characteristics are always refused). A capture subject refuses them cleanly (nothing to
+  reconnect to).
 
 ## 0.3.3
 
