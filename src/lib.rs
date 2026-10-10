@@ -20,6 +20,7 @@ pub mod radio;
 pub mod recon;
 pub mod report;
 pub mod rpa;
+pub mod restapi;
 pub mod rules;
 pub mod sarif;
 pub mod smp;

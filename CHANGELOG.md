@@ -14,6 +14,13 @@
   subcommands' logic (same safety gating: `write`/`probe-writes` need `--yes`, firmware/DFU
   characteristics are always refused). A capture subject refuses them cleanly (nothing to
   reconnect to).
+- `ble-doctor serve [--listen host:port] [--timeout secs]`: a minimal read-only REST API + event
+  stream over `Central::scan` (bettercap's `ble.device.*` events and REST, #107). `GET /scan`
+  returns one JSON array; `GET /events` is the same scan as Server-Sent Events (one `data: {...}`
+  line per device). No new dependency: hand-rolled HTTP/1.1 over `std::net`, same "no external
+  binaries" posture as the rest of the tool. Read-only, no write endpoints — same scope as `mcp`.
+  Each connection's events come from one batch scan, not live incremental discovery over time
+  (that needs `Central::scan_live`, #100; wiring it in is a small follow-up once #100 merges).
 
 ## 0.3.3
 

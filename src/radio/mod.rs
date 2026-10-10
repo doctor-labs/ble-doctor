@@ -37,6 +37,7 @@ pub trait Central {
 }
 
 /// btleplug-backed central using the first adapter.
+#[derive(Clone, Copy)]
 pub struct BtleplugCentral;
 
 fn map_err(e: btleplug::Error) -> BleError {
