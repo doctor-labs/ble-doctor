@@ -31,3 +31,42 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: ble-doctor-*/*
+  crates:
+    # Trusted publishing: crates.io checks this workflow's OIDC identity against the publisher
+    # configured on the crate (doctor-labs/ble-doctor, release.yml) and hands back a short-lived
+    # token. CARGO_REGISTRY_TOKEN stays only as a fallback until an OIDC release has succeeded;
+    # delete the secret and the fallback after that.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag and Cargo.toml name the same version
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          if [ "v$cargo_version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME and Cargo.toml $cargo_version must agree"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Exchange the OIDC identity for a short-lived crates.io token
+        id: auth
+        continue-on-error: true # not configured yet: fall back to the secret below
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::notice::no crates.io token (OIDC not configured, CARGO_REGISTRY_TOKEN not set); skipped publishing to crates.io"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A "ble-doctor-release (github.com/doctor-labs/ble-doctor)" "https://crates.io/api/v1/crates/ble-doctor/$version")
+          if [ "$code" = "200" ]; then
+            echo "::notice::ble-doctor $version is already on crates.io; nothing to publish"
+            exit 0
+          fi
+          cargo publish
