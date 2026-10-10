@@ -335,15 +335,15 @@ fn about(name: &str) -> &'static str {
 
 /// The kit's report tail for a findings command. `--sarif` is written here, before anything is
 /// printed and not atomically, as ble always has: a failed write is `sarif: <path>: <e>` on stderr,
-/// exit 2, nothing on stdout (so the kit never sees the path: its own write prints first, and its
-/// refusal of `--sarif` == `--baseline` is a new behavior).
+/// exit 2, nothing on stdout. The kit's `preflight` still refuses `--sarif` == `--baseline` (usage
+/// error, exit 2): 0.2.0 silently overwrote the baseline.
 fn findings(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
     let mut o = OutputArgs::from_matches(m, bd);
-    let sarif = o.sarif.take();
     let pre = match preflight(bd, &o) {
         Ok(p) => p,
         Err(f) => return Ok(doctor_kit::output::report_failure(bd, &f)),
     };
+    let sarif = o.sarif.take();
     let ctx = Ctx::detached(Default::default(), o.fail_on);
     let scanned = bd.try_scan(&ctx);
     if let (Some(path), Ok(env)) = (&sarif, &scanned) {
