@@ -1,0 +1,4 @@
+exit: 2
+--- stdout ---
+--- stderr ---
+baseline baseline_bad.json: bad JSON: key must be a string at line 1 column 2

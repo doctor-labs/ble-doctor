@@ -1,0 +1,208 @@
+### no baseline, fail-on high: exit 0
+{
+  "data": {
+    "passed": [
+      {
+        "detail": "No characteristics writable without bonding.",
+        "id": "unauthenticated_writes",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "No DFU/OTA entry point detected.",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "GATT fully enumerated (1 services, 0 writable characteristics); no DFU/OTA entry point present. The empty result is evidence, not missing data — this target exposes no BLE firmware-update surface.",
+        "id": "dfu_surface_absent",
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "findings": [],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "incomplete",
+    "model": "ble/1",
+    "value": 100
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### no baseline, fail-on info: exit 0
+{
+  "data": {
+    "passed": [
+      {
+        "detail": "No characteristics writable without bonding.",
+        "id": "unauthenticated_writes",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "No DFU/OTA entry point detected.",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "GATT fully enumerated (1 services, 0 writable characteristics); no DFU/OTA entry point present. The empty result is evidence, not missing data — this target exposes no BLE firmware-update surface.",
+        "id": "dfu_surface_absent",
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "findings": [],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "incomplete",
+    "model": "ble/1",
+    "value": 100
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### empty baseline, fail-on high: exit 0
+{
+  "baseline": {
+    "fixed": 0,
+    "new": 0,
+    "unchanged": 0
+  },
+  "data": {
+    "passed": [
+      {
+        "detail": "No characteristics writable without bonding.",
+        "id": "unauthenticated_writes",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "No DFU/OTA entry point detected.",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "GATT fully enumerated (1 services, 0 writable characteristics); no DFU/OTA entry point present. The empty result is evidence, not missing data — this target exposes no BLE firmware-update surface.",
+        "id": "dfu_surface_absent",
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "findings": [],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "incomplete",
+    "model": "ble/1",
+    "value": 100
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### self baseline, fail-on info: exit 0
+{
+  "baseline": {
+    "fixed": 0,
+    "new": 0,
+    "unchanged": 0
+  },
+  "data": {
+    "passed": [
+      {
+        "detail": "No characteristics writable without bonding.",
+        "id": "unauthenticated_writes",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "No DFU/OTA entry point detected.",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "GATT fully enumerated (1 services, 0 writable characteristics); no DFU/OTA entry point present. The empty result is evidence, not missing data — this target exposes no BLE firmware-update surface.",
+        "id": "dfu_surface_absent",
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "findings": [],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "incomplete",
+    "model": "ble/1",
+    "value": 100
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### sarif
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "properties": {
+        "score": {
+          "coverage_gaps": 1,
+          "label": "incomplete",
+          "model": "ble/1",
+          "value": 100
+        }
+      },
+      "results": [],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/doctor-labs/ble-doctor",
+          "name": "ble-doctor",
+          "rules": [],
+          "version": "@VERSION@"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

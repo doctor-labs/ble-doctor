@@ -1,0 +1,6 @@
+exit: 2
+--- stdout ---
+--- stderr ---
+error: a value is required for '--mtu <MTU>' but none was supplied
+
+For more information, try '--help'.

@@ -1,0 +1,269 @@
+===== ble-doctor  =====
+Cross-platform BLE diagnostics and security CLI
+
+Usage: ble-doctor [OPTIONS] <COMMAND>
+
+Commands:
+  scan          Scan for BLE devices
+  analyze       Analyze a capture or device
+  sniff         Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device
+  fingerprint   Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)
+  probe-writes  Probe writable characteristics (EMPIRICAL: connects without bonding and writes)
+  read-values   Read characteristic values on non-SIG services (lists length + preview only)
+  dfu           Probe DFU surface (EMPIRICAL buttonless probe: writes to the device without bonding)
+  doctor        Diagnose the local BLE environment
+  mcp           Run the MCP server
+  recon         Recon a target (native GATT inventory)
+  ctf           CTF helpers (own-gear / CTF scope only; never reachable via `mcp`)
+  baseline      Baseline snapshots
+  handoff       Export a handoff bundle
+  rules         Inspect rules
+  why           Explain a finding (rule doc, plus the finding from a report JSON)
+  mitm          GATT MITM: clone the target as a peripheral and relay+log traffic to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)
+  help          Print this message or the help of the given subcommand(s)
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+  -h, --help               Print help
+  -V, --version            Print version
+===== ble-doctor scan =====
+Scan for BLE devices
+
+Usage: ble-doctor scan [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>        Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>          Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --timeout <TIMEOUT>        Scan duration in seconds [default: 5]
+      --mtu <MTU>                Request exactly this ATT MTU from --target (a BLE address; Linux only)
+      --as-address <AS_ADDRESS>  Connect to --target presenting this BLE address (LE Set Random Address; Linux only)
+      --json                     Emit the doctor/1 JSON envelope (needs --target)
+      --tui                      Show the findings in an interactive terminal UI (needs --target)
+      --sarif <SARIF>            Write a SARIF 2.1.0 report to this file (needs --target)
+      --baseline <BASELINE>      Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
+      --fail-on <FAIL_ON>        Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity [default: high] [possible values: info, low, medium, high, critical]
+  -h, --help                     Print help
+===== ble-doctor analyze =====
+Analyze a capture or device
+
+Usage: ble-doctor analyze [OPTIONS] <CAPTURE>
+
+Arguments:
+  <CAPTURE>  Path to a btsnoop/pcap capture
+
+Options:
+      --adapter <ADAPTER>    Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --json                 Emit the doctor/1 JSON envelope
+      --sarif <SARIF>        Write a SARIF 2.1.0 report to this file
+      --baseline <BASELINE>  Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
+      --fail-on <FAIL_ON>    Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity [default: high] [possible values: info, low, medium, high, critical]
+  -h, --help                 Print help
+===== ble-doctor sniff =====
+Ingest a BLE sniffer (Sniffle) stream and judge MAC rotation; needs sniffer hardware for --device
+
+Usage: ble-doctor sniff [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>      Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --device <DEVICE>        Serial/USB sniffer port (e.g. /dev/ttyACM0)
+      --from-file <FROM_FILE>  Saved Sniffle text dump to parse instead of live capture
+      --json                   Emit JSON
+  -h, --help                   Print help
+===== ble-doctor fingerprint =====
+Device fingerprint: LE+GATT profile (+ SDP/LMP on Linux)
+
+Usage: ble-doctor fingerprint [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
+      --json               Emit JSON
+  -h, --help               Print help
+===== ble-doctor probe-writes =====
+Probe writable characteristics (EMPIRICAL: connects without bonding and writes)
+
+Usage: ble-doctor probe-writes [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --allow-dangerous    Required: this writes to the device. Firmware/DFU characteristics are still refused regardless of this flag
+      --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
+      --json               Emit JSON
+  -h, --help               Print help
+===== ble-doctor read-values =====
+Read characteristic values on non-SIG services (lists length + preview only)
+
+Usage: ble-doctor read-values [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
+  -h, --help               Print help
+===== ble-doctor dfu =====
+Probe DFU surface (EMPIRICAL buttonless probe: writes to the device without bonding)
+
+Usage: ble-doctor dfu [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --allow-dangerous    Required: this writes to the device
+      --bond-sharing       Also probe the bond-sharing buttonless characteristic (8ec90004-...)
+      --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
+      --json               Emit JSON
+  -h, --help               Print help
+===== ble-doctor doctor =====
+Diagnose the local BLE environment
+
+Usage: ble-doctor doctor [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+  -h, --help               Print help
+===== ble-doctor mcp =====
+Run the MCP server
+
+Usage: ble-doctor mcp [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+  -h, --help               Print help
+===== ble-doctor recon =====
+Recon a target (native GATT inventory)
+
+Usage: ble-doctor recon [OPTIONS] --target <TARGET>
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
+      --bluesploit         Also run the external bluesploit cross-check (heuristic, INFO-only, never scored)
+      --json               Emit JSON
+  -h, --help               Print help
+===== ble-doctor ctf =====
+CTF helpers (own-gear / CTF scope only; never reachable via `mcp`)
+
+Usage: ble-doctor ctf [OPTIONS] <COMMAND>
+
+Commands:
+  brute            Write 0x00..=0xff to --char one byte at a time, reading --read-char back after each write, until the read-back contains --contains
+  read-n           Read a characteristic `n` times in a row
+  write-then-read  Write a value, then read a (possibly different) characteristic back
+  help             Print this message or the help of the given subcommand(s)
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+  -h, --help               Print help
+===== ble-doctor ctf brute =====
+Write 0x00..=0xff to --char one byte at a time, reading --read-char back after each write, until the read-back contains --contains
+
+Usage: ble-doctor ctf brute [OPTIONS] --target <TARGET> --char-uuid <CHAR_UUID> --read-uuid <READ_UUID> --contains <CONTAINS>
+
+Options:
+      --adapter <ADAPTER>      Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>        Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --char-uuid <CHAR_UUID>  Characteristic UUID to brute-write
+      --read-uuid <READ_UUID>  Characteristic UUID to read back after each write
+      --contains <CONTAINS>    Stop once the read-back value contains this substring (ASCII)
+      --timeout <TIMEOUT>      Scan/connect timeout in seconds [default: 5]
+  -h, --help                   Print help
+===== ble-doctor ctf read-n =====
+Read a characteristic `n` times in a row
+
+Usage: ble-doctor ctf read-n [OPTIONS] --target <TARGET> --char-uuid <CHAR_UUID>
+
+Options:
+      --adapter <ADAPTER>      Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>        Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --char-uuid <CHAR_UUID>  Characteristic UUID to read
+      --n <N>                  Number of reads [default: 1]
+      --timeout <TIMEOUT>      Scan/connect timeout in seconds [default: 5]
+  -h, --help                   Print help
+===== ble-doctor ctf write-then-read =====
+Write a value, then read a (possibly different) characteristic back
+
+Usage: ble-doctor ctf write-then-read [OPTIONS] --target <TARGET> --char-uuid <CHAR_UUID> --data <DATA> --read-uuid <READ_UUID>
+
+Options:
+      --adapter <ADAPTER>      Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>        Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
+      --char-uuid <CHAR_UUID>  Characteristic UUID to write
+      --data <DATA>            Bytes to write, as hex (e.g. "01ff")
+      --read-uuid <READ_UUID>  Characteristic UUID to read back
+      --timeout <TIMEOUT>      Scan/connect timeout in seconds [default: 5]
+  -h, --help                   Print help
+===== ble-doctor baseline =====
+Baseline snapshots
+
+Usage: ble-doctor baseline [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+  -h, --help               Print help
+===== ble-doctor handoff =====
+Export a handoff bundle
+
+Usage: ble-doctor handoff [OPTIONS] --report <REPORT>
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --report <REPORT>    A `scan --json` report file to turn into the bundle (no radio)
+  -h, --help               Print help
+===== ble-doctor rules =====
+Inspect rules
+
+Usage: ble-doctor rules [OPTIONS] <COMMAND>
+
+Commands:
+  list     List rules
+  explain  Explain a rule
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+  -h, --help               Print help
+===== ble-doctor rules list =====
+List rules
+
+Usage: ble-doctor rules list [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --json               Emit JSON
+  -h, --help               Print help
+===== ble-doctor rules explain =====
+Explain a rule
+
+Usage: ble-doctor rules explain [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Rule id
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+  -h, --help               Print help
+===== ble-doctor why =====
+Explain a finding (rule doc, plus the finding from a report JSON)
+
+Usage: ble-doctor why [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Rule / check id
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --report <REPORT>    A `--json` report file to pull the matching finding from
+  -h, --help               Print help
+===== ble-doctor mitm =====
+GATT MITM: clone the target as a peripheral and relay+log traffic to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)
+
+Usage: ble-doctor mitm [OPTIONS] --target <TARGET>
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --target <TARGET>    The real target device to relay to (address / identifier / name) [env: BLE_DOCTOR_TARGET=]
+      --allow-dangerous    Required: this actively intercepts GATT traffic between a victim and the real device (scope: own hardware or written authorization only)
+  -h, --help               Print help

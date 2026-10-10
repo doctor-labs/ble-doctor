@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "properties": {
+        "score": {
+          "coverage_gaps": 0,
+          "label": "needs work",
+          "model": "ble/1",
+          "value": 85
+        }
+      },
+      "results": [
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mac_rotation.pcap"
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "MAC address is static across all 3 captured advertisement frames over 700s - trackable."
+          },
+          "partialFingerprints": {
+            "doctorFinding/v1": "2645ecac8ace608a"
+          },
+          "properties": {
+            "severity": "medium"
+          },
+          "ruleId": "mac_rotation",
+          "ruleIndex": 0
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/doctor-labs/ble-doctor",
+          "name": "ble-doctor",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "id": "mac_rotation",
+              "name": "mac_rotation",
+              "properties": {
+                "security-severity": "5.5",
+                "tags": [
+                  "security",
+                  "bluetooth"
+                ]
+              },
+              "shortDescription": {
+                "text": "mac_rotation"
+              }
+            }
+          ],
+          "version": "@VERSION@"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "properties": {
+        "score": {
+          "coverage_gaps": 1,
+          "label": "needs work",
+          "model": "ble/1",
+          "value": 60
+        }
+      },
+      "results": [
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "smp_legacy.btsnoop"
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Not enough advertisement frames captured to judge MAC rotation."
+          },
+          "partialFingerprints": {
+            "doctorFinding/v1": "5e35ac6fb0e59985"
+          },
+          "properties": {
+            "severity": "info"
+          },
+          "ruleId": "mac_rotation",
+          "ruleIndex": 0
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "smp_legacy.btsnoop"
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "SMP legacy pairing: LE Secure Connections not set by both sides; the key exchange is passively crackable."
+          },
+          "partialFingerprints": {
+            "doctorFinding/v1": "14347a4aee8580ec"
+          },
+          "properties": {
+            "severity": "high"
+          },
+          "ruleId": "smp_legacy_pairing",
+          "ruleIndex": 2
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "smp_legacy.btsnoop"
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "SMP Just Works association: unauthenticated, no MITM protection."
+          },
+          "partialFingerprints": {
+            "doctorFinding/v1": "c3a38abb45b59c07"
+          },
+          "properties": {
+            "severity": "medium"
+          },
+          "ruleId": "smp_just_works",
+          "ruleIndex": 1
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/doctor-labs/ble-doctor",
+          "name": "ble-doctor",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "id": "mac_rotation",
+              "name": "mac_rotation",
+              "properties": {
+                "security-severity": "0.0",
+                "tags": [
+                  "security",
+                  "bluetooth"
+                ]
+              },
+              "shortDescription": {
+                "text": "mac_rotation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "id": "smp_just_works",
+              "name": "smp_just_works",
+              "properties": {
+                "security-severity": "5.5",
+                "tags": [
+                  "security",
+                  "bluetooth"
+                ]
+              },
+              "shortDescription": {
+                "text": "smp_just_works"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "id": "smp_legacy_pairing",
+              "name": "smp_legacy_pairing",
+              "properties": {
+                "security-severity": "8.5",
+                "tags": [
+                  "security",
+                  "bluetooth"
+                ]
+              },
+              "shortDescription": {
+                "text": "smp_legacy_pairing"
+              }
+            }
+          ],
+          "version": "@VERSION@"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

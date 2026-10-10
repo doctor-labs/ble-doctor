@@ -1,0 +1,49 @@
+exit: 0
+--- stdout ---
+{
+  "data": {
+    "capture": {
+      "adv_frame_timestamps": [
+        0.0,
+        300.0,
+        700.0
+      ],
+      "adv_mac_addresses": [
+        "c0:00:00:00:00:01",
+        "c0:00:00:00:00:01",
+        "c0:00:00:00:00:01"
+      ],
+      "capture_flavour": "pcap-le-ll",
+      "duration_seconds": 700.0
+    },
+    "passed": [],
+    "smp": {
+      "seen": false
+    }
+  },
+  "exit_code": 0,
+  "findings": [
+    {
+      "category": "privacy",
+      "fingerprint": "2645ecac8ace608a",
+      "id": "mac_rotation",
+      "location": {
+        "kind": "file",
+        "ref": "mac_rotation.pcap"
+      },
+      "message": "MAC address is static across all 3 captured advertisement frames over 700s - trackable.",
+      "remedy": "If the advertising address is static over a long capture, enable resolvable private addresses and rotation in the device's BLE stack.",
+      "severity": "medium"
+    }
+  ],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 0,
+    "label": "needs work",
+    "model": "ble/1",
+    "value": 85
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+--- stderr ---
