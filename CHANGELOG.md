@@ -14,13 +14,20 @@ new `shell` and `explore`. ble-doctor now runs on doctor-kit 0.2.
   `scan --tui` opens the explorer and then prints the report (the old ratatui view is gone).
 - New: `fix` (agent prompt from a finding or `--from report.json`), `install` (agent skill, Cursor rule, AGENTS.md
   block: the skill forbids the active probes), `ci install` (analyzes `captures/`; installs `libdbus-1-dev`).
-- A bad `--baseline`, or `--sarif` and `--baseline` naming the same file, is refused before the radio is touched.
-  `--sarif` is written atomically; a failed write still prints the report and exits 2.
-- A `--baseline` file must be a `doctor/1` object or a bare findings array whose entries all carry a `fingerprint`.
 - Library API removed: `cli::{Cli, Command, run(Cli)}` (the binary is `doctor_kit::run_with`; `cli::run()` replaces it),
-  `report::to_table`, `baseline::report_diff`, the `tui` module. Kept: `report::{to_envelope, gate_exit, to_json, score}`,
-  `baseline::{load, diff}`, `sarif::to_sarif` (the goldens call them).
-- The MCP server is unchanged (still ble's own loop: the kit cannot yet reproduce its `unknown tool` error text).
+  `report::to_table`, `baseline::report_diff`, the `tui` module, `mcp::{handle, serve}` (the kit serves MCP now).
+  Kept: `report::{to_envelope, gate_exit, to_json, score}`, `baseline::{load, diff}`, `sarif::to_sarif`
+  (the goldens call them), `mcp::{TOOLS, argv_for}`.
+- Everything else machine-visible is unchanged on purpose (pinned by `tests/golden.rs` and `tests/golden_d6.rs`):
+  baseline parsing (a bare findings array is still refused, entries without a fingerprint are still skipped, no
+  size cap), bare `baseline <path>: ...` errors, the `sarif: <path>: <e>` write failure printed before anything
+  else, `--sarif` may still name the baseline file, MCP tool errors and unknown-tool text.
+
+### Fixed (contract)
+
+- MCP: a request that is not a JSON object, has an `id` that is not a string or integer, or has no `method`
+  now gets a JSON-RPC -32600 error (it used to get no answer, an echoed id, or "method not found"); `ping` is
+  answered. Errors already exited 2 (doctor/1).
 
 ### Also in 0.3.0
 
