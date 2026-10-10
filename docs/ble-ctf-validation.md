@@ -1,6 +1,6 @@
 # Live validation on the Pi rig (2026-10-07)
 
-First live run of ble-doctorV2 on real hardware. Defensive / own-gear.
+First live run of BLE Doctor on real hardware. Defensive / own-gear.
 
 ## Rig
 

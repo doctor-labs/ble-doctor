@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rename: drop "V2" from the product identity (docs say "BLE Doctor"); SARIF `informationUri` and
+  `Cargo.toml` `repository`/`homepage` now point to https://github.com/doctor-labs/ble-doctor.
+
 - `mitm` implements the Linux peripheral/clone half (#63): `serve()` connects to `--target`,
   clones its enumerated GATT onto a BlueZ/bluster peripheral (one `Characteristic`/`Descriptor`
   per enumerated one), advertises it, and relays every victim read/write to the real device via

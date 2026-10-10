@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
-const INFORMATION_URI: &str = "https://github.com/Vaibhav91one/ble-doctor";
+const INFORMATION_URI: &str = "https://github.com/doctor-labs/ble-doctor";
 
 fn level(s: Severity) -> &'static str {
     match s {
