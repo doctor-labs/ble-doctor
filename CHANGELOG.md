@@ -21,13 +21,15 @@ new `shell` and `explore`. ble-doctor now runs on doctor-kit 0.2.
 - Everything else machine-visible is unchanged on purpose (pinned by `tests/golden.rs` and `tests/golden_d6.rs`):
   baseline parsing (a bare findings array is still refused, entries without a fingerprint are still skipped, no
   size cap), bare `baseline <path>: ...` errors, the `sarif: <path>: <e>` write failure printed before anything
-  else, `--sarif` may still name the baseline file, MCP tool errors and unknown-tool text.
+  else, MCP tool errors and unknown-tool text.
 
 ### Fixed (contract)
 
 - MCP: a request that is not a JSON object, has an `id` that is not a string or integer, or has no `method`
   now gets a JSON-RPC -32600 error (it used to get no answer, an echoed id, or "method not found"); `ping` is
   answered. Errors already exited 2 (doctor/1).
+- `--sarif` and `--baseline` naming the same file is refused as a usage error (bare message, exit 2, nothing
+  written): 0.2.0 silently overwrote the baseline with the SARIF.
 
 ### Also in 0.3.0
 
