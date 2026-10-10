@@ -320,6 +320,67 @@ impl Doctor for BleDoctor {
         serde_json::to_string_pretty(&doc).expect("sarif serializes")
     }
 
+    /// Agent skill: what is safe to run (a capture, or a passive scan) and what is not.
+    fn skill_body(&self) -> String {
+        "# ble-doctor\n\n\
+`ble-doctor` scores the security posture of a BLE device. Run it; do not guess.\n\n\
+```sh\n\
+ble-doctor analyze <capture.pcap|.btsnoop> --json   # a capture file: offline, always safe\n\
+ble-doctor scan --target <addr|name> --json         # a live device: passive GATT enumeration, needs a radio\n\
+ble-doctor fix --from report.json [<finding-id>]    # a prompt to hand to a coding agent\n\
+ble-doctor why <finding-id>                         # what a rule means and how to verify it\n\
+ble-doctor mcp                                      # `scan` and `analyze` as an MCP stdio server\n\
+```\n\n\
+`scan` needs `--target` (or `BLE_DOCTOR_TARGET`); without it, it only lists nearby devices.\n\n\
+Never run `probe-writes`, `read-values`, `dfu`, `ctf` or `mitm`, and never pass `--allow-dangerous`: they\n\
+write to or intercept a device. Use them only on hardware you own or are authorized to test, on the\n\
+owner's explicit instruction.\n\n\
+Envelope: `schema` is `doctor/1`; `findings[]` hold `id`, `severity`, `location`, `message`, `remedy`;\n\
+`score.value` is 0-100 (`ble/1`). Exit code 0 = clean, 1 = findings at or above `--fail-on` (default\n\
+high), 3 = new findings against `--baseline`, 2 = the tool failed. Fix at the source, then re-run.\n"
+            .into()
+    }
+    /// ble-doctor builds with BlueZ's D-Bus headers on Linux.
+    fn ci_setup_steps(&self) -> String {
+        "- uses: dtolnay/rust-toolchain@stable\n\
+- run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config\n\
+- run: cargo install --locked ble-doctor"
+            .into()
+    }
+    /// CI has no radio: it analyzes the captures committed under `captures/`.
+    fn ci_workflow(&self) -> String {
+        let steps: String = self
+            .ci_setup_steps()
+            .lines()
+            .map(|l| format!("      {l}\n"))
+            .collect();
+        format!(
+            "# Written by `ble-doctor ci install`. Analyzes the captures committed under captures/.
+name: ble-doctor
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+{steps}      - name: Analyze captures
+        run: |
+          shopt -s nullglob
+          rc=0
+          for f in captures/*.pcap captures/*.btsnoop captures/*.cap; do
+            ble-doctor analyze \"$f\" --headless --fail-on high || rc=1
+          done
+          exit $rc
+"
+        )
+    }
+
     fn baseline_message(&self, e: &BaselineError) -> String {
         sanitize(&match e {
             BaselineError::Unreadable { path, err } => format!("baseline {path}: {err}"),
