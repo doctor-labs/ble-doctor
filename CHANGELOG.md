@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+- Release builds: commit `Cargo.lock` (was gitignored), so `cargo build --locked` in the release workflow works and GitHub releases ship binaries. No code change.
+
 ## 0.3.0
 
 Human output now uses doctor-kit faces; machine output is unchanged (pinned byte for byte by `tests/golden.rs`);
