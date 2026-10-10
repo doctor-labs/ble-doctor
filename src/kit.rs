@@ -5,7 +5,8 @@
 use crate::checks::CheckResult;
 use crate::report::{coverage_gaps, finding, product_score, sanitize};
 use doctor_core::{Envelope, Location, LocationKind, Score};
-use doctor_kit::baseline::BaselineError;
+use doctor_kit::baseline::Saved;
+use doctor_kit::doctor::PreflightKind;
 use doctor_kit::{Check, Collected, Ctx, Doctor, ScanFailure, TargetKind};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -150,15 +151,18 @@ impl Doctor for BleDoctor {
         serde_json::to_string_pretty(&env.to_value()).expect("report serializes") + "\n"
     }
 
-    fn baseline_message(&self, e: &BaselineError) -> String {
-        sanitize(&match e {
-            BaselineError::Unreadable { path, err } => format!("baseline {path}: {err}"),
-            BaselineError::NotJson { path, err } => format!("baseline {path}: bad JSON: {err}"),
-            BaselineError::NotDoctor1 { path } => {
-                format!("baseline {path}: not a doctor/1 envelope (re-create it with `--json`)")
-            }
-            other => other.to_string(),
+    /// ble's own baseline parsing, kept exactly: a doctor/1 object (a bare array is refused), entries
+    /// without a fingerprint are skipped, no size cap, and the message is printed bare.
+    fn load_baseline(&self, path: &std::path::Path) -> Result<Saved, ScanFailure> {
+        let doc = crate::baseline::load(path).map_err(|e| ScanFailure::plain(sanitize(&e)))?;
+        Ok(Saved {
+            fingerprints: crate::baseline::failed_fingerprints(&doc),
+            doc,
         })
+    }
+    /// Failures raised by the kit's `preflight` print bare, as ble always has.
+    fn preflight_error(&self, _: PreflightKind, msg: String) -> ScanFailure {
+        ScanFailure::plain(msg)
     }
     /// The drift against the baseline on stderr (stdout stays clean for `--json`), in check order.
     fn baseline_hook(&self, saved: &Value, env: &mut Envelope) -> Result<(), ScanFailure> {
