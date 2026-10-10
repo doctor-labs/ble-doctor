@@ -70,6 +70,7 @@ Options:
       --baseline <BASELINE>  Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
       --color <COLOR>        [default: auto] [possible values: auto, always, never]
       --fail-on <FAIL_ON>    Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity [default: high] [possible values: info, low, medium, high, critical]
+      --irk <IRKS>           An IRK you already hold (32 hex chars, same byte order as an Identity Information PDU), to resolve Resolvable Private Addresses in the capture against (repeatable). Improves the mac_rotation verdict: rotating addresses that all resolve to one IRK are one device's RPA, not several distinct ones
       --score                Print only the score number
       --headless             Plain text, no color: for CI and pipes
   -h, --help                 Print help

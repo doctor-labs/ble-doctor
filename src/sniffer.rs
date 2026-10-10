@@ -108,9 +108,9 @@ mod tests {
 
     #[test]
     fn rotation_verdicts() {
-        let rot = check_mac_rotation(&parse_sniffle(&format!("{A_1S}\n{B_700S}")));
+        let rot = check_mac_rotation(&parse_sniffle(&format!("{A_1S}\n{B_700S}")), &[]);
         assert!(rot.passed);
-        let stat = check_mac_rotation(&parse_sniffle(&format!("{A_1S}\n{A_700S}")));
+        let stat = check_mac_rotation(&parse_sniffle(&format!("{A_1S}\n{A_700S}")), &[]);
         assert!(!stat.passed);
     }
 

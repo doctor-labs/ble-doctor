@@ -178,6 +178,8 @@ pub struct BleDoctor {
     gatt: Mutex<Option<GattInfo>>,
     /// The one gathered result: `shell` and `explore` re-scan, a radio must not be hit twice.
     cache: Mutex<Option<Result<Collected, ScanFailure>>>,
+    /// IRKs the operator already holds (`analyze --irk`), for RPA resolution in `mac_rotation`.
+    irks: Vec<[u8; 16]>,
 }
 
 impl BleDoctor {
@@ -188,7 +190,14 @@ impl BleDoctor {
             out,
             gatt: Mutex::new(None),
             cache: Mutex::new(None),
+            irks: Vec::new(),
         }
+    }
+
+    /// Attach IRKs for `analyze --irk` to resolve against (`capture::check_mac_rotation`).
+    pub fn with_irks(mut self, irks: Vec<[u8; 16]>) -> Self {
+        self.irks = irks;
+        self
     }
 
     fn gather(&self) -> Result<Collected, ScanFailure> {
@@ -246,7 +255,7 @@ impl BleDoctor {
                 envelope: None,
             })?;
         let smp = crate::smp::analyze(&info.smp_pdus);
-        let mut checks = vec![crate::capture::check_mac_rotation(&info)];
+        let mut checks = vec![crate::capture::check_mac_rotation(&info, &self.irks)];
         checks.extend(smp.checks);
         // Peripheral identity: the one address in the capture; rotating/absent -> empty.
         let mut addrs: Vec<&String> = info.adv_mac_addresses.iter().collect();

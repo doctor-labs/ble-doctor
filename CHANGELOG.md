@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `analyze --irk <hex>` (repeatable): resolve Resolvable Private Addresses in a capture against an
+  IRK you already hold. `mac_rotation`'s detail now notes when some/all of a capture's rotating
+  addresses resolve to a given IRK (one device's legitimately-rotating RPA, not several distinct
+  devices) (#94). New `src/rpa.rs` (`ah`, `resolves`), verified against the Linux kernel's
+  `smp_ah` self-test vector (Core Spec Vol 3 Part H 2.2.2); new `aes` dependency.
+
 ## 0.3.3
 
 doctor-kit 0.2.2. Machine output is unchanged (goldens pass untouched).

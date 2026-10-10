@@ -66,6 +66,12 @@ pub struct AnalyzeArgs {
     /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
     #[arg(long, default_value = "high", value_parser = severity())]
     fail_on: Severity,
+    /// An IRK you already hold (32 hex chars, same byte order as an Identity Information PDU),
+    /// to resolve Resolvable Private Addresses in the capture against (repeatable). Improves the
+    /// mac_rotation verdict: rotating addresses that all resolve to one IRK are one device's RPA,
+    /// not several distinct ones.
+    #[arg(long = "irk")]
+    irks: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -516,7 +522,16 @@ fn build(m: &ArgMatches) -> Result<BleDoctor, String> {
             _ => Out::Human,
         },
     };
-    Ok(BleDoctor::new(subject, adapter, out))
+    let irks = match sub {
+        Some(("analyze", s)) => s
+            .get_many::<String>("irks")
+            .into_iter()
+            .flatten()
+            .map(|h| crate::rpa::parse_irk(h))
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => Vec::new(),
+    };
+    Ok(BleDoctor::new(subject, adapter, out).with_irks(irks))
 }
 
 /// The whole CLI.
@@ -598,7 +613,7 @@ fn sniff(_: &BleDoctor, args: &SniffArgs) -> Result<u8, String> {
     };
     match res {
         Ok(info) => {
-            let r = crate::capture::check_mac_rotation(&info);
+            let r = crate::capture::check_mac_rotation(&info, &[]);
             if *json {
                 let v = serde_json::json!({"capture": info, "checks": [r]});
                 println!("{}", serde_json::to_string_pretty(&v).unwrap());
