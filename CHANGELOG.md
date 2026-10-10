@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.3
+
+doctor-kit 0.2.2. Machine output is unchanged (goldens pass untouched).
+
+### Fixed (contract)
+- Output into a closed pipe (`ble-doctor analyze x --json | head`) exits 2 with `error: cannot write to stdout`
+  instead of panicking (exit 101); the `capture:`, device-list and `gatt:` preamble lines no longer panic either.
+- MCP: a request with neither an `id` nor a method is answered with -32600 and `"id": null`; `explore` without a
+  TTY is an error (exit 2), not a panic.
+
+### Fixed
+- MCP: an unknown tool name containing quotes yields valid JSON again (`{"error":"unknown tool: x\"y"}`), as in 0.2.0.
+
 ## 0.3.2
 
 ### Fixed

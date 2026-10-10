@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "ble-doctor"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "bluer",
  "bluster",
@@ -850,9 +850,9 @@ dependencies = [
 
 [[package]]
 name = "doctor-kit"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4c08d4123217bfb6d0936b65d86050b4df8f400b8cbc72ff03a972efe081acf"
+checksum = "9209e036b6b53683a45fe359d232da9a8072920117d577389ad8063ccfd5f882"
 dependencies = [
  "clap",
  "doctor-core",
