@@ -1,0 +1,348 @@
+### no baseline, fail-on high: exit 1
+{
+  "data": {
+    "passed": [
+      {
+        "detail": "DFU entry point present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) and its control point requires bonding or an encrypted link (assumed from the GATT table, not measured — run `ble-doctor probe-writes` to establish it).",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 1,
+  "findings": [
+    {
+      "category": "gatt",
+      "fingerprint": "0f2ac4dfdf30da97",
+      "id": "unauthenticated_writes",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "Writable without bonding: 0000aaa1-0000-1000-8000-00805f9b34fb",
+      "remedy": "Require bonding and encryption on characteristics that change device state, so a peer that has never paired cannot write them.",
+      "severity": "high"
+    },
+    {
+      "category": "dfu",
+      "fingerprint": "f6dd504ac1634e18",
+      "id": "dfu_surface_absent",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "DFU surface present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) — absence does not apply. Whether the update is signed is reported separately.",
+      "remedy": "Nothing to fix. If the result is inconclusive, enumerate the device fully and re-run.",
+      "severity": "info"
+    }
+  ],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "needs work",
+    "model": "ble/1",
+    "value": 70
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### no baseline, fail-on info: exit 1
+{
+  "data": {
+    "passed": [
+      {
+        "detail": "DFU entry point present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) and its control point requires bonding or an encrypted link (assumed from the GATT table, not measured — run `ble-doctor probe-writes` to establish it).",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 1,
+  "findings": [
+    {
+      "category": "gatt",
+      "fingerprint": "0f2ac4dfdf30da97",
+      "id": "unauthenticated_writes",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "Writable without bonding: 0000aaa1-0000-1000-8000-00805f9b34fb",
+      "remedy": "Require bonding and encryption on characteristics that change device state, so a peer that has never paired cannot write them.",
+      "severity": "high"
+    },
+    {
+      "category": "dfu",
+      "fingerprint": "f6dd504ac1634e18",
+      "id": "dfu_surface_absent",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "DFU surface present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) — absence does not apply. Whether the update is signed is reported separately.",
+      "remedy": "Nothing to fix. If the result is inconclusive, enumerate the device fully and re-run.",
+      "severity": "info"
+    }
+  ],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "needs work",
+    "model": "ble/1",
+    "value": 70
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### empty baseline, fail-on high: exit 3
+{
+  "baseline": {
+    "fixed": 0,
+    "new": 2,
+    "unchanged": 0
+  },
+  "data": {
+    "passed": [
+      {
+        "detail": "DFU entry point present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) and its control point requires bonding or an encrypted link (assumed from the GATT table, not measured — run `ble-doctor probe-writes` to establish it).",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 3,
+  "findings": [
+    {
+      "baseline_state": "new",
+      "category": "gatt",
+      "fingerprint": "0f2ac4dfdf30da97",
+      "id": "unauthenticated_writes",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "Writable without bonding: 0000aaa1-0000-1000-8000-00805f9b34fb",
+      "remedy": "Require bonding and encryption on characteristics that change device state, so a peer that has never paired cannot write them.",
+      "severity": "high"
+    },
+    {
+      "baseline_state": "new",
+      "category": "dfu",
+      "fingerprint": "f6dd504ac1634e18",
+      "id": "dfu_surface_absent",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "DFU surface present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) — absence does not apply. Whether the update is signed is reported separately.",
+      "remedy": "Nothing to fix. If the result is inconclusive, enumerate the device fully and re-run.",
+      "severity": "info"
+    }
+  ],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "needs work",
+    "model": "ble/1",
+    "value": 70
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### self baseline, fail-on info: exit 0
+{
+  "baseline": {
+    "fixed": 0,
+    "new": 0,
+    "unchanged": 2
+  },
+  "data": {
+    "passed": [
+      {
+        "detail": "DFU entry point present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) and its control point requires bonding or an encrypted link (assumed from the GATT table, not measured — run `ble-doctor probe-writes` to establish it).",
+        "id": "dfu_entry_point",
+        "passed": true,
+        "severity": "info"
+      },
+      {
+        "detail": "Signing status not established (no signing probe was run); INCONCLUSIVE, carries zero score weight. Next probe: write a Secure DFU Command carrying an unsigned init packet to the DFU control point and classify the response.",
+        "id": "dfu_signing_enforced",
+        "inconclusive": true,
+        "passed": true,
+        "severity": "info"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "findings": [
+    {
+      "baseline_state": "unchanged",
+      "category": "gatt",
+      "fingerprint": "0f2ac4dfdf30da97",
+      "id": "unauthenticated_writes",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "Writable without bonding: 0000aaa1-0000-1000-8000-00805f9b34fb",
+      "remedy": "Require bonding and encryption on characteristics that change device state, so a peer that has never paired cannot write them.",
+      "severity": "high"
+    },
+    {
+      "baseline_state": "unchanged",
+      "category": "dfu",
+      "fingerprint": "f6dd504ac1634e18",
+      "id": "dfu_surface_absent",
+      "location": {
+        "kind": "device",
+        "ref": "AA:BB:CC:DD:EE:FF"
+      },
+      "message": "DFU surface present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) — absence does not apply. Whether the update is signed is reported separately.",
+      "remedy": "Nothing to fix. If the result is inconclusive, enumerate the device fully and re-run.",
+      "severity": "info"
+    }
+  ],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "needs work",
+    "model": "ble/1",
+    "value": 70
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+### sarif
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "properties": {
+        "score": {
+          "coverage_gaps": 1,
+          "label": "needs work",
+          "model": "ble/1",
+          "value": 70
+        }
+      },
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "kind": "device",
+                  "name": "BLE device"
+                }
+              ]
+            }
+          ],
+          "message": {
+            "text": "Writable without bonding: 0000aaa1-0000-1000-8000-00805f9b34fb"
+          },
+          "partialFingerprints": {
+            "doctorFinding/v1": "0f2ac4dfdf30da97"
+          },
+          "properties": {
+            "severity": "high"
+          },
+          "ruleId": "unauthenticated_writes",
+          "ruleIndex": 1
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "kind": "device",
+                  "name": "BLE device"
+                }
+              ]
+            }
+          ],
+          "message": {
+            "text": "DFU surface present (0000fe59-0000-1000-8000-00805f9b34fb, 8ec90001-f315-4f60-9fb8-838830daea50) — absence does not apply. Whether the update is signed is reported separately."
+          },
+          "partialFingerprints": {
+            "doctorFinding/v1": "f6dd504ac1634e18"
+          },
+          "properties": {
+            "severity": "info"
+          },
+          "ruleId": "dfu_surface_absent",
+          "ruleIndex": 0
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/doctor-labs/ble-doctor",
+          "name": "ble-doctor",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "id": "dfu_surface_absent",
+              "name": "dfu_surface_absent",
+              "properties": {
+                "security-severity": "0.0",
+                "tags": [
+                  "security",
+                  "bluetooth"
+                ]
+              },
+              "shortDescription": {
+                "text": "dfu_surface_absent"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "id": "unauthenticated_writes",
+              "name": "unauthenticated_writes",
+              "properties": {
+                "security-severity": "8.5",
+                "tags": [
+                  "security",
+                  "bluetooth"
+                ]
+              },
+              "shortDescription": {
+                "text": "unauthenticated_writes"
+              }
+            }
+          ],
+          "version": "@VERSION@"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

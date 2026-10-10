@@ -1,0 +1,117 @@
+exit: 0
+--- stdout ---
+{
+  "data": {
+    "capture": {
+      "adv_frame_timestamps": [],
+      "adv_mac_addresses": [],
+      "capture_flavour": "btsnoop-h4",
+      "duration_seconds": null
+    },
+    "passed": [
+      {
+        "detail": "Encryption key size is 16 bytes.",
+        "id": "smp_key_size",
+        "passed": true,
+        "severity": "medium"
+      }
+    ],
+    "smp": {
+      "pairing": {
+        "max_key_size": 16,
+        "method": "just_works",
+        "secure_connections": false
+      },
+      "pdus": [
+        {
+          "bonding": true,
+          "code": 1,
+          "ct2": false,
+          "initiator_key_dist": [
+            "enc_key"
+          ],
+          "io_capability": "NoInputNoOutput",
+          "keypress": false,
+          "length": 7,
+          "max_key_size": 16,
+          "mitm": false,
+          "name": "pairing_request",
+          "oob": false,
+          "responder_key_dist": [
+            "enc_key"
+          ],
+          "secure_connections": false
+        },
+        {
+          "bonding": true,
+          "code": 2,
+          "ct2": false,
+          "initiator_key_dist": [
+            "enc_key"
+          ],
+          "io_capability": "NoInputNoOutput",
+          "keypress": false,
+          "length": 7,
+          "max_key_size": 16,
+          "mitm": false,
+          "name": "pairing_response",
+          "oob": false,
+          "responder_key_dist": [
+            "enc_key"
+          ],
+          "secure_connections": false
+        }
+      ],
+      "seen": true
+    }
+  },
+  "exit_code": 0,
+  "findings": [
+    {
+      "category": "pairing",
+      "fingerprint": "14347a4aee8580ec",
+      "id": "smp_legacy_pairing",
+      "location": {
+        "kind": "file",
+        "ref": "smp_legacy.btsnoop"
+      },
+      "message": "SMP legacy pairing: LE Secure Connections not set by both sides; the key exchange is passively crackable.",
+      "remedy": "Enable LE Secure Connections on the device's BLE stack and require it on both sides (set the SC bit in AuthReq).",
+      "severity": "high"
+    },
+    {
+      "category": "pairing",
+      "fingerprint": "c3a38abb45b59c07",
+      "id": "smp_just_works",
+      "location": {
+        "kind": "file",
+        "ref": "smp_legacy.btsnoop"
+      },
+      "message": "SMP Just Works association: unauthenticated, no MITM protection.",
+      "remedy": "Set the MITM bit and use a stronger association model: a display or keyboard IO capability for Numeric Comparison or Passkey Entry, or out-of-band pairing (OOB).",
+      "severity": "medium"
+    },
+    {
+      "category": "privacy",
+      "fingerprint": "5e35ac6fb0e59985",
+      "id": "mac_rotation",
+      "location": {
+        "kind": "file",
+        "ref": "smp_legacy.btsnoop"
+      },
+      "message": "Not enough advertisement frames captured to judge MAC rotation.",
+      "remedy": "If the advertising address is static over a long capture, enable resolvable private addresses and rotation in the device's BLE stack.",
+      "severity": "info"
+    }
+  ],
+  "schema": "doctor/1",
+  "score": {
+    "coverage_gaps": 1,
+    "label": "needs work",
+    "model": "ble/1",
+    "value": 60
+  },
+  "tool": "ble-doctor",
+  "version": "@VERSION@"
+}
+--- stderr ---

@@ -1,0 +1,4 @@
+exit: 2
+--- stdout ---
+--- stderr ---
+analyze: unrecognised capture format (not pcap or btsnoop)

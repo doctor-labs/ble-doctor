@@ -1,0 +1,83 @@
+exit: 0
+--- stdout ---
+[
+  {
+    "id": "unauthenticated_writes",
+    "title": "GATT characteristics writable without bonding",
+    "severities": [
+      "high",
+      "info"
+    ],
+    "category": "gatt"
+  },
+  {
+    "id": "mac_rotation",
+    "title": "Advertising address rotation",
+    "severities": [
+      "medium",
+      "info"
+    ],
+    "category": "privacy"
+  },
+  {
+    "id": "dfu_entry_point",
+    "title": "DFU control point reachable without bonding",
+    "severities": [
+      "high",
+      "info"
+    ],
+    "category": "dfu"
+  },
+  {
+    "id": "dfu_signing_enforced",
+    "title": "Firmware signature verification",
+    "severities": [
+      "high",
+      "medium",
+      "info"
+    ],
+    "category": "dfu"
+  },
+  {
+    "id": "dfu_surface_absent",
+    "title": "No DFU/OTA surface present",
+    "severities": [
+      "info"
+    ],
+    "category": "dfu"
+  },
+  {
+    "id": "smp_legacy_pairing",
+    "title": "SMP legacy pairing (no LE Secure Connections)",
+    "severities": [
+      "high"
+    ],
+    "category": "pairing"
+  },
+  {
+    "id": "smp_just_works",
+    "title": "SMP Just Works association",
+    "severities": [
+      "medium"
+    ],
+    "category": "pairing"
+  },
+  {
+    "id": "smp_key_size",
+    "title": "SMP encryption key size below 16 bytes",
+    "severities": [
+      "high",
+      "medium"
+    ],
+    "category": "pairing"
+  },
+  {
+    "id": "smp_pairing_failed",
+    "title": "SMP pairing failed",
+    "severities": [
+      "info"
+    ],
+    "category": "pairing"
+  }
+]
+--- stderr ---
