@@ -311,7 +311,10 @@ pub fn run(cli: Cli) {
                 let smp = crate::smp::analyze(&info.smp_pdus);
                 let mut checks = vec![crate::capture::check_mac_rotation(&info)];
                 checks.extend(smp.checks);
-                let loc = serde_json::json!({"kind": "file", "ref": capture.display().to_string()});
+                let loc = doctor_core::Location::new(
+                    doctor_core::LocationKind::File,
+                    capture.display().to_string(),
+                );
                 let human = format!(
                     "capture: {} ({} adv frames)\n{}{}",
                     crate::report::sanitize(info.capture_flavour.as_deref().unwrap_or("unknown")),
@@ -491,7 +494,10 @@ pub fn run(cli: Cli) {
                                         crate::checks::check_dfu_signing_enforced(&g),
                                         crate::checks::check_dfu_surface_absent(&g),
                                     ];
-                                    let loc = serde_json::json!({"kind": "device", "ref": t});
+                                    let loc = doctor_core::Location::new(
+                                        doctor_core::LocationKind::Device,
+                                        t.as_str(),
+                                    );
                                     if *json {
                                         let code = emit(
                                             &checks,
@@ -1114,7 +1120,7 @@ fn fail() -> ! {
 #[allow(clippy::too_many_arguments)]
 fn emit(
     checks: &[crate::checks::CheckResult],
-    loc: &serde_json::Value,
+    loc: &doctor_core::Location,
     device: &str,
     extra: serde_json::Value,
     json: bool,
@@ -1124,7 +1130,7 @@ fn emit(
     human: Option<&str>,
 ) -> i32 {
     use crate::baseline;
-    let sev = baseline::parse_severity(fail_on).expect("clap-validated");
+    let sev = crate::checks::Severity::parse(fail_on).expect("clap-validated");
     let base = match baseline.as_deref().map(baseline::load).transpose() {
         Ok(b) => b,
         Err(e) => {
@@ -1141,9 +1147,9 @@ fn emit(
     let env = crate::report::to_envelope(checks, loc, device, base.as_ref(), code, extra);
     if let Some(path) = sarif {
         let v = crate::sarif::to_sarif(
-            &env["score"],
+            &crate::report::score(checks),
             checks,
-            loc["ref"].as_str().filter(|_| loc["kind"] == "file"),
+            Some(loc.reference.as_str()).filter(|_| loc.kind == doctor_core::LocationKind::File),
             device,
         );
         if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap()) {

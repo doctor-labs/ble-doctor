@@ -65,7 +65,7 @@ pub fn from_report(path: &Path) -> Result<Value, String> {
         .filter_map(|f| {
             Some(CheckResult::new(
                 f["id"].as_str()?,
-                crate::baseline::parse_severity(f["severity"].as_str()?)?,
+                crate::checks::Severity::parse(f["severity"].as_str()?)?,
                 false, // every doctor/1 finding is a failure
                 f["message"].as_str().unwrap_or(""),
             ))
