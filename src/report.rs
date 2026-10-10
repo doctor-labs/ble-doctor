@@ -15,13 +15,17 @@ pub fn severity_weight(s: Severity) -> u32 {
     }
 }
 
-/// `100 * prod(1 - w/100)` over FAILED checks, half-up rounded, clamped to [0,100].
-pub fn compute_score(results: &[CheckResult]) -> u8 {
-    let mut score = 100.0_f64;
-    for r in results.iter().filter(|r| !r.passed) {
-        score *= 1.0 - f64::from(severity_weight(r.severity)) / 100.0;
-    }
+/// `100 * prod(1 - w/100)` over the severities of FAILED checks, half-up rounded, clamped to [0,100].
+pub fn product_score(failed: impl Iterator<Item = Severity>) -> u8 {
+    let score = failed.fold(100.0_f64, |s, v| {
+        s * (1.0 - f64::from(severity_weight(v)) / 100.0)
+    });
     (score + 0.5).floor().clamp(0.0, 100.0) as u8
+}
+
+/// [`product_score`] over the failed checks of `results`.
+pub fn compute_score(results: &[CheckResult]) -> u8 {
+    product_score(results.iter().filter(|r| !r.passed).map(|r| r.severity))
 }
 
 /// The one sanitizer for every human renderer (table, stderr diff, TUI, handoff, scan device list):
@@ -53,7 +57,7 @@ pub fn gate_exit(results: &[CheckResult], fail_on: Severity, new: Option<&[&Chec
 }
 
 /// One finding (doctor/1 section 2) for a FAILED check.
-fn finding(
+pub(crate) fn finding(
     r: &CheckResult,
     location: &Location,
     fingerprint: String,
