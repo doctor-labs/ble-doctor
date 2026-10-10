@@ -3,6 +3,8 @@ name = "ble-doctor"
 version = "0.2.0"
 edition = "2021"
 description = "Cross-platform BLE diagnostics and security CLI"
+repository = "https://github.com/doctor-labs/ble-doctor"
+homepage = "https://github.com/doctor-labs/ble-doctor"
 
 [lib]
 path = "src/lib.rs"

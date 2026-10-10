@@ -1,10 +1,10 @@
-# AGENTS.md — ble-doctorV2 contributor & agent conventions
+# AGENTS.md — BLE Doctor contributor & agent conventions
 
 Conventions for anyone (human or agent) changing this repo. Read before editing.
 
 ## What this project is
 
-`ble-doctorV2` is a single cross-platform **Rust CLI** (`ble-doctor`) that audits and **scores** the
+BLE Doctor is a single cross-platform **Rust CLI** (`ble-doctor`) that audits and **scores** the
 security posture of a BLE device, and is a *superset* of the common BLE tools (bettercap, nRF
 Connect, bluing, the BlueZ CLIs). It drives the radio itself — **no external tools** (no gatttool,
 bdaddr, tshark, Wireshark, bettercap) — and it **never leaks a raw OS error**. It is a Rust rewrite

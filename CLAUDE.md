@@ -1,4 +1,4 @@
-# ble-doctorV2 — project context
+# BLE Doctor — project context
 
 `ble-doctor` scores the security posture of a BLE device (tag / tracker / peripheral class) from a
 live GATT enumeration or a capture. It is a single **cross-platform Rust CLI** and a *superset* of
