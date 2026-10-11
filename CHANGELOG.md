@@ -35,6 +35,10 @@
   discovery on `BtleplugCentral`; every other backend/fake keeps today's one-batch behaviour via
   a default trait method — observably unchanged for them). New `--sort rssi|name|address` prints
   a sorted recap once the window closes (#100).
+- `scan --tui` without `--target`: a live, auto-updating device-list screen (nRF Connect's
+  scanner) instead of the one-shot frame it used to need `--target` for (#113). Devices appear
+  and re-sort (strongest signal first) as `Central::scan_live` discovers them; `q`/Esc/Ctrl-C
+  quits early. `scan --tui --target <addr>` is unchanged (the per-device findings explorer).
 
 Not done here: bettercap's `ble.clear` has no equivalent — ble-doctor's `scan` is one-shot per
 invocation (nothing persists between runs to clear).

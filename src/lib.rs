@@ -23,6 +23,7 @@ pub mod restapi;
 pub mod rpa;
 pub mod rules;
 pub mod sarif;
+pub mod scanner_tui;
 pub mod smp;
 pub mod sniffer;
 pub mod testkit;

@@ -31,6 +31,9 @@ doctor-kit = "0.2.2"
 btleplug = "0.11"
 futures = "0.3"
 aes = "0.9.3"
+# Already pulled in transitively by doctor-kit's own TUI; used directly here for the bare-scan
+# live device-list screen (#113), kept at the exact version already resolved.
+ratatui = "0.30.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", features = ["bluetoothd", "l2cap"] }

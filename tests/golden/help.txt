@@ -48,7 +48,7 @@ Options:
       --color <COLOR>            [default: auto] [possible values: auto, always, never]
       --json                     Emit the doctor/1 JSON envelope (needs --target)
       --score                    Print only the score number
-      --tui                      Show the findings in an interactive terminal UI (needs --target)
+      --tui                      Show the findings in an interactive terminal UI; without --target, a live-updating device list instead (nRF Connect's scanner screen)
       --headless                 Plain text, no color: for CI and pipes
       --sarif <SARIF>            Write a SARIF 2.1.0 report to this file (needs --target)
       --baseline <BASELINE>      Diff findings against a saved doctor/1 `--json` report; exit 3 if NEW failures reach --fail-on
