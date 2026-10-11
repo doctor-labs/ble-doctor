@@ -88,6 +88,10 @@ pub struct SniffArgs {
     /// Also write the session's advertising frames as a pcap (Wireshark/crackle can open it)
     #[arg(long)]
     write_pcap: Option<std::path::PathBuf>,
+    /// Stream frames live to this named pipe as they're captured (`mkfifo` it first, then
+    /// `wireshark -k -i <path>`); blocks until a reader opens it, like `btlejack -w`
+    #[arg(long)]
+    fifo: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -617,6 +621,7 @@ fn sniff(_: &BleDoctor, args: &SniffArgs) -> Result<u8, String> {
         from_file,
         json,
         write_pcap,
+        fifo,
     } = args;
     let res = match (from_file, device) {
         (Some(f), _) => std::fs::read_to_string(f)
@@ -634,6 +639,29 @@ fn sniff(_: &BleDoctor, args: &SniffArgs) -> Result<u8, String> {
                 if let Err(e) = std::fs::write(path, bytes) {
                     eprintln!("sniff: writing {}: {e}", path.display());
                     fail();
+                }
+            }
+            if let Some(path) = fifo {
+                // A real named pipe (`mkfifo`) blocks this open() until Wireshark opens the other
+                // end for reading, same as btlejack -w; a plain file just opens normally.
+                match std::fs::OpenOptions::new().write(true).open(path) {
+                    Ok(f) => {
+                        let mut w = crate::capture::PcapWriter::new(f);
+                        if let Err(e) = w.write_header() {
+                            eprintln!("sniff: writing {}: {e}", path.display());
+                            fail();
+                        }
+                        for frame in &info.adv_frames {
+                            if let Err(e) = w.write_frame(frame) {
+                                eprintln!("sniff: writing {}: {e}", path.display());
+                                fail();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("sniff: opening {}: {e}", path.display());
+                        fail();
+                    }
                 }
             }
             let r = crate::capture::check_mac_rotation(&info, &[]);

@@ -47,7 +47,7 @@ From source: `cargo build --release` (Linux needs `libdbus-1-dev` and `pkg-confi
 | `ble-doctor fix [--from report.json]` | A prompt for a coding agent from one finding or the whole report |
 | `ble-doctor install`, `ble-doctor ci install` | Write the agent skill / Cursor rule / AGENTS.md block, or a GitHub Actions workflow that analyzes `captures/` |
 | `ble-doctor fingerprint --target <addr>` | LE+GATT profile (plus SDP/LMP on Linux) |
-| `ble-doctor recon`, `read-values`, `probe-writes`, `dfu`, `sniff`, `mitm`, `ctf` | Active and empirical probes; own-gear scope (`sniff --write-pcap FILE` exports the session for Wireshark/crackle) |
+| `ble-doctor recon`, `read-values`, `probe-writes`, `dfu`, `sniff`, `mitm`, `ctf` | Active and empirical probes; own-gear scope (`sniff --write-pcap FILE` exports the session for Wireshark/crackle; `sniff --fifo PATH` streams it live to a named pipe — `mkfifo PATH && wireshark -k -i PATH`) |
 | `ble-doctor rules`, `why`, `baseline`, `handoff`, `doctor` | Rule docs, finding explanations, baseline snapshots, handoff bundle, environment check |
 | `ble-doctor mcp` | MCP server exposing `scan` and `analyze` |
 | `ble-doctor serve [--listen host:port] [--timeout secs]` | Read-only REST API: `GET /scan` (one JSON array), `GET /events` (same scan as Server-Sent Events) |

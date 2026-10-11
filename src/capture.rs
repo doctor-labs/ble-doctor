@@ -323,19 +323,43 @@ fn rpa_resolution(macs: &[String], irks: &[[u8; 16]]) -> (usize, usize) {
     (resolved, by_irk.len())
 }
 
-/// Write `frames` as a pcap `LINKTYPE_BLUETOOTH_LE_LL` capture (openable in Wireshark; crackle
-/// also reads pcap), round-trippable through `parse_capture`/`parse_pcap`. Lets a `scan` or
-/// `sniff` session (and a previously-read capture's own `adv_frames`) be exported for other
-/// tools. `scan`/`mitm` producing `AdvFrame`s of their own (as opposed to re-exporting an already
-/// -parsed capture) needs raw-radio frame capture, which isn't wired yet — see #95's PR.
-pub fn write_pcap(frames: &[AdvFrame]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend(0xA1B2_C3D4u32.to_le_bytes()); // magic: little-endian, microsecond timestamps
-    out.extend([2, 0, 4, 0]); // version 2.4
-    out.extend([0u8; 8]); // thiszone, sigfigs
-    out.extend(65535u32.to_le_bytes()); // snaplen
-    out.extend(LINKTYPE_BLUETOOTH_LE_LL.to_le_bytes());
-    for f in frames {
+/// Streaming pcap `LINKTYPE_BLUETOOTH_LE_LL` writer: the global header once, then one record per
+/// `write_frame`, flushed immediately — so a sink that's a named pipe (`sniff --fifo`, #109) shows
+/// each frame to a reader (Wireshark `-k -i <fifo>`, btlejack `-w`) as soon as it's written,
+/// instead of only once the whole capture is done. `write_pcap` below is the non-streaming,
+/// whole-capture-at-once form of the same bytes, for a file or `--json`.
+pub struct PcapWriter<W: std::io::Write> {
+    out: W,
+    header_written: bool,
+}
+
+impl<W: std::io::Write> PcapWriter<W> {
+    pub fn new(out: W) -> Self {
+        PcapWriter {
+            out,
+            header_written: false,
+        }
+    }
+
+    /// The 24-byte pcap global header. A no-op (never writes twice) if already called.
+    pub fn write_header(&mut self) -> std::io::Result<()> {
+        if self.header_written {
+            return Ok(());
+        }
+        self.out.write_all(&0xA1B2_C3D4u32.to_le_bytes())?; // magic: LE, microsecond timestamps
+        self.out.write_all(&[2, 0, 4, 0])?; // version 2.4
+        self.out.write_all(&[0u8; 8])?; // thiszone, sigfigs
+        self.out.write_all(&65535u32.to_le_bytes())?; // snaplen
+        self.out
+            .write_all(&LINKTYPE_BLUETOOTH_LE_LL.to_le_bytes())?;
+        self.header_written = true;
+        Ok(())
+    }
+
+    /// One record. Writes the header first if `write_header` hasn't run yet; flushes after every
+    /// frame (the point of this type: a pipe reader sees it now, not whenever the OS feels like).
+    pub fn write_frame(&mut self, f: &AdvFrame) -> std::io::Result<()> {
+        self.write_header()?;
         let mut p = ADV_ACCESS_ADDRESS.to_le_bytes().to_vec();
         p.push(0x40 | f.pdu_type); // TxAdd=1 (random address, the common case); ChSel/RxAdd unset
         p.push(6 + f.adv_data.len() as u8);
@@ -344,13 +368,27 @@ pub fn write_pcap(frames: &[AdvFrame]) -> Vec<u8> {
         p.extend([0, 0, 0]); // CRC: not recomputed, parse_pcap doesn't check it
         let sec = f.ts.floor().max(0.0) as u32;
         let us = ((f.ts - f.ts.floor()) * 1e6).round() as u32;
-        out.extend(sec.to_le_bytes());
-        out.extend(us.to_le_bytes());
-        out.extend((p.len() as u32).to_le_bytes());
-        out.extend((p.len() as u32).to_le_bytes());
-        out.extend(p);
+        self.out.write_all(&sec.to_le_bytes())?;
+        self.out.write_all(&us.to_le_bytes())?;
+        self.out.write_all(&(p.len() as u32).to_le_bytes())?;
+        self.out.write_all(&(p.len() as u32).to_le_bytes())?;
+        self.out.write_all(&p)?;
+        self.out.flush()
     }
-    out
+}
+
+/// Write `frames` as a pcap `LINKTYPE_BLUETOOTH_LE_LL` capture (openable in Wireshark; crackle
+/// also reads pcap), round-trippable through `parse_capture`/`parse_pcap`. Lets a `scan` or
+/// `sniff` session (and a previously-read capture's own `adv_frames`) be exported for other
+/// tools. `scan`/`mitm` producing `AdvFrame`s of their own (as opposed to re-exporting an already
+/// -parsed capture) needs raw-radio frame capture, which isn't wired yet — see #95's PR.
+pub fn write_pcap(frames: &[AdvFrame]) -> Vec<u8> {
+    let mut w = PcapWriter::new(Vec::new());
+    w.write_header().expect("writing to a Vec never fails");
+    for f in frames {
+        w.write_frame(f).expect("writing to a Vec never fails");
+    }
+    w.out
 }
 
 /// Duration-aware MAC rotation verdict (v1 `check_mac_rotation`). `irks` are IRKs the operator
@@ -546,6 +584,56 @@ mod tests {
         assert_eq!(after.adv_mac_addresses, before.adv_mac_addresses);
         assert_eq!(after.adv_frame_timestamps, before.adv_frame_timestamps);
         assert_eq!(after.adv_frames, before.adv_frames);
+    }
+
+    /// #109: `PcapWriter` over a real named pipe. Proves the header reaches a reader before the
+    /// writer has written any frames at all (that's the whole point of a FIFO sink over
+    /// `write_pcap`'s "build it all, write it all" — a reader attached early sees data live), and
+    /// that the full stream still parses back to the same frames `write_pcap` would have produced.
+    #[test]
+    fn pcap_writer_streams_through_a_real_fifo() {
+        let path =
+            std::env::temp_dir().join(format!("ble-doctor-test-{}.fifo", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false),
+            "mkfifo not available"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut f = std::fs::File::open(&reader_path).unwrap();
+            let mut header = [0u8; 24];
+            f.read_exact(&mut header).unwrap();
+            tx.send(()).unwrap(); // the header is through: prove it arrived before any frame did
+            let mut rest = Vec::new();
+            f.read_to_end(&mut rest).unwrap();
+            (header, rest)
+        });
+
+        let macs: Vec<_> = (0..2).map(mac).collect();
+        let info = parse_capture(&pcap(&macs, &[0, 300])).unwrap();
+        let out = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let mut w = PcapWriter::new(out);
+        w.write_header().unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reader did not see the header before any frame was written");
+        for f in &info.adv_frames {
+            w.write_frame(f).unwrap();
+        }
+        drop(w); // closes the write end: the reader's read_to_end sees EOF
+
+        let (header, rest) = reader.join().unwrap();
+        let mut whole = header.to_vec();
+        whole.extend(rest);
+        let replayed = parse_capture(&whole).unwrap();
+        assert_eq!(replayed.adv_frames, info.adv_frames);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

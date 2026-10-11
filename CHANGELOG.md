@@ -27,6 +27,9 @@
   so a previously-read capture round-trips through `write_pcap`. `sniff --write-pcap <file>`
   exports a sniffer session (live or `--from-file`) this way (#95). `scan`/`mitm` exporting their
   own live frames needs raw-radio frame capture, not wired yet.
+- `sniff --fifo <path>`: stream the session to a named pipe live, one frame at a time, flushed
+  immediately (`capture::PcapWriter`) — `mkfifo wireshark.fifo && wireshark -k -i wireshark.fifo`,
+  matching btlejack `-w` (#109). Opening it blocks until a reader connects, like a real FIFO.
 
 ## 0.3.3
 
