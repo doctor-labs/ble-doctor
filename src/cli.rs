@@ -48,6 +48,10 @@ pub struct ScanArgs {
     /// Exit 1 (3 with --baseline, new findings only) when a finding is at or above this severity
     #[arg(long, default_value = "high", value_parser = severity())]
     fail_on: Severity,
+    /// Sort the device list (bare scan only; printed live as devices are seen, then once more
+    /// in this order)
+    #[arg(long, conflicts_with = "target", value_parser = PossibleValuesParser::new(["rssi", "name", "address"]))]
+    sort: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -568,6 +572,7 @@ fn scan(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
         mtu,
         as_address,
         tui,
+        sort,
         ..
     } = ScanArgs::from_arg_matches(m).map_err(|e| e.to_string())?;
     if let (Some(t), Some(a)) = (&target, &as_address) {
@@ -591,9 +596,28 @@ fn scan(bd: &BleDoctor, m: &ArgMatches) -> Result<u8, String> {
         return Ok(0);
     }
     if target.is_none() {
-        use crate::radio::{BtleplugCentral, Central};
-        match block(BtleplugCentral.scan(std::time::Duration::from_secs(timeout))) {
-            Ok(devs) => print_devices(&devs, Out::Human),
+        use crate::radio::{sort_devices, BtleplugCentral, Central, SortKey};
+        let key: Option<SortKey> = match sort.as_deref().map(str::parse) {
+            Some(Ok(k)) => Some(k),
+            Some(Err(e)) => {
+                eprintln!("scan: {e}");
+                fail();
+            }
+            None => None,
+        };
+        let res = block(
+            BtleplugCentral.scan_live(std::time::Duration::from_secs(timeout), |d| {
+                print_devices(std::slice::from_ref(d), Out::Human);
+            }),
+        );
+        match res {
+            Ok(mut devs) => {
+                if let Some(key) = key {
+                    sort_devices(&mut devs, key);
+                    println!("--- sorted by {} ---", sort.as_deref().unwrap_or(""));
+                    print_devices(&devs, Out::Human);
+                }
+            }
             Err(e) => {
                 eprintln!("scan: {e}\n  fix: {}", e.remediation());
                 fail();

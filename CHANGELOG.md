@@ -30,6 +30,14 @@
 - `sniff --fifo <path>`: stream the session to a named pipe live, one frame at a time, flushed
   immediately (`capture::PcapWriter`) — `mkfifo wireshark.fifo && wireshark -k -i wireshark.fifo`,
   matching btlejack `-w` (#109). Opening it blocks until a reader connects, like a real FIFO.
+- `scan` (no `--target`): the device list now prints live, as each device is first seen, instead
+  of only once after the whole `--timeout` window elapses (`Central::scan_live`, real incremental
+  discovery on `BtleplugCentral`; every other backend/fake keeps today's one-batch behaviour via
+  a default trait method — observably unchanged for them). New `--sort rssi|name|address` prints
+  a sorted recap once the window closes (#100).
+
+Not done here: bettercap's `ble.clear` has no equivalent — ble-doctor's `scan` is one-shot per
+invocation (nothing persists between runs to clear).
 
 ## 0.3.3
 
