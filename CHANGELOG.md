@@ -21,6 +21,12 @@
   binaries" posture as the rest of the tool. Read-only, no write endpoints — same scope as `mcp`.
   Each connection's events come from one batch scan, not live incremental discovery over time
   (that needs `Central::scan_live`, #100; wiring it in is a small follow-up once #100 merges).
+- `capture::write_pcap`: write advertising frames back out as a pcap (`LINKTYPE_BLUETOOTH_LE_LL`),
+  openable in Wireshark; crackle also reads pcap. `parse_capture` now keeps each advertising
+  frame's PDU type and `AdvData` (`CaptureInfo::adv_frames`, pcap/btsnoop/Sniffle all populate it),
+  so a previously-read capture round-trips through `write_pcap`. `sniff --write-pcap <file>`
+  exports a sniffer session (live or `--from-file`) this way (#95). `scan`/`mitm` exporting their
+  own live frames needs raw-radio frame capture, not wired yet.
 
 ## 0.3.3
 

@@ -85,6 +85,9 @@ pub struct SniffArgs {
     /// Emit JSON
     #[arg(long)]
     json: bool,
+    /// Also write the session's advertising frames as a pcap (Wireshark/crackle can open it)
+    #[arg(long)]
+    write_pcap: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -613,6 +616,7 @@ fn sniff(_: &BleDoctor, args: &SniffArgs) -> Result<u8, String> {
         device,
         from_file,
         json,
+        write_pcap,
     } = args;
     let res = match (from_file, device) {
         (Some(f), _) => std::fs::read_to_string(f)
@@ -625,6 +629,13 @@ fn sniff(_: &BleDoctor, args: &SniffArgs) -> Result<u8, String> {
     };
     match res {
         Ok(info) => {
+            if let Some(path) = write_pcap {
+                let bytes = crate::capture::write_pcap(&info.adv_frames);
+                if let Err(e) = std::fs::write(path, bytes) {
+                    eprintln!("sniff: writing {}: {e}", path.display());
+                    fail();
+                }
+            }
             let r = crate::capture::check_mac_rotation(&info, &[]);
             if *json {
                 let v = serde_json::json!({"capture": info, "checks": [r]});
