@@ -50,6 +50,7 @@ From source: `cargo build --release` (Linux needs `libdbus-1-dev` and `pkg-confi
 | `ble-doctor recon`, `read-values`, `probe-writes`, `dfu`, `sniff`, `mitm`, `ctf` | Active and empirical probes; own-gear scope |
 | `ble-doctor rules`, `why`, `baseline`, `handoff`, `doctor` | Rule docs, finding explanations, baseline snapshots, handoff bundle, environment check |
 | `ble-doctor mcp` | MCP server exposing `scan` and `analyze` |
+| `ble-doctor serve [--listen host:port] [--timeout secs]` | Read-only REST API: `GET /scan` (one JSON array), `GET /events` (same scan as Server-Sent Events) |
 
 Run `ble-doctor <command> --help` for every flag. Build progress is tracked in the repo issues; see `docs/` for design and the deferred-test checklist.
 

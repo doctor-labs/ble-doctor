@@ -101,6 +101,16 @@ pub struct FingerprintArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct ServeArgs {
+    /// Listen address (host:port)
+    #[arg(long, default_value = "127.0.0.1:8731")]
+    listen: String,
+    /// Each connection's scan window, in seconds
+    #[arg(long, default_value_t = 5)]
+    timeout: u64,
+}
+
+#[derive(Args, Debug)]
 pub struct ProbeWritesArgs {
     /// Target address / identifier / name (or set BLE_DOCTOR_TARGET)
     #[arg(long, env = "BLE_DOCTOR_TARGET")]
@@ -326,6 +336,7 @@ fn about(name: &str) -> &'static str {
         "dfu" => "Probe DFU surface (EMPIRICAL buttonless probe: writes to the device without bonding)",
         "doctor" => "Diagnose the local BLE environment",
         "mcp" => "Run the MCP server",
+        "serve" => "Run a read-only REST API + event stream over GET /scan and GET /events",
         "recon" => "Recon a target (native GATT inventory)",
         "ctf" => "CTF helpers (own-gear / CTF scope only; never reachable via `mcp`)",
         "baseline" => "Baseline snapshots",
@@ -441,6 +452,7 @@ pub fn extensions() -> Extensions<BleDoctor> {
                     .display_order(17),
                 run: explore,
             },
+            ext!(18, "serve", ServeArgs, serve_cmd),
         ],
         global_args: vec![Arg::new("adapter")
             .long("adapter")
@@ -1151,6 +1163,22 @@ fn mitm(_: &BleDoctor, args: &MitmArgs) -> Result<u8, String> {
          not available on this platform."
     );
     fail();
+}
+
+fn serve_cmd(_: &BleDoctor, args: &ServeArgs) -> Result<u8, String> {
+    let ServeArgs { listen, timeout } = args;
+    let addr: std::net::SocketAddr = listen
+        .parse()
+        .map_err(|_| format!("serve: not a host:port address: {listen}"))?;
+    println!("serve: GET http://{addr}/scan  GET http://{addr}/events");
+    use crate::radio::BtleplugCentral;
+    block(crate::restapi::serve(
+        &BtleplugCentral,
+        addr,
+        std::time::Duration::from_secs(*timeout),
+    ))
+    .map_err(|e| format!("serve: {e}"))?;
+    Ok(0)
 }
 
 fn mitm_refused() -> ! {

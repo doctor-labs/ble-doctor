@@ -25,6 +25,7 @@ Commands:
   mitm          GATT MITM: clone the target as a peripheral and relay+log traffic to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)
   shell         Interactive shell over a live device or a capture
   explore       Full-screen explorer over a live device or a capture
+  serve         Run a read-only REST API + event stream over GET /scan and GET /events
   help          Print this message or the help of the given subcommand(s)
 
 Options:
@@ -377,4 +378,14 @@ Options:
       --target <TARGET>    Target address / identifier / name (or set BLE_DOCTOR_TARGET) [env: BLE_DOCTOR_TARGET=]
       --timeout <TIMEOUT>  Scan/connect timeout in seconds [default: 5]
       --capture <CAPTURE>  Open a btsnoop/pcap capture instead of a live device
+  -h, --help               Print help
+===== ble-doctor serve =====
+Run a read-only REST API + event stream over GET /scan and GET /events
+
+Usage: ble-doctor serve [OPTIONS]
+
+Options:
+      --adapter <ADAPTER>  Local Bluetooth adapter (e.g. hci0). Linux only; ignored elsewhere
+      --listen <LISTEN>    Listen address (host:port) [default: 127.0.0.1:8731]
+      --timeout <TIMEOUT>  Each connection's scan window, in seconds [default: 5]
   -h, --help               Print help

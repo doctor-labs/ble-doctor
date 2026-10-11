@@ -19,6 +19,7 @@ pub mod probe;
 pub mod radio;
 pub mod recon;
 pub mod report;
+pub mod restapi;
 pub mod rpa;
 pub mod rules;
 pub mod sarif;
