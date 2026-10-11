@@ -30,6 +30,7 @@ doctor-core = "0.1"
 doctor-kit = "0.2.2"
 btleplug = "0.11"
 futures = "0.3"
+aes = "0.9.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", features = ["bluetoothd", "l2cap"] }

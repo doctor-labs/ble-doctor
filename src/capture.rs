@@ -238,11 +238,46 @@ fn le_adv_reports(e: &[u8]) -> Vec<String> {
     out
 }
 
-/// Duration-aware MAC rotation verdict (v1 `check_mac_rotation`).
-pub fn check_mac_rotation(info: &CaptureInfo) -> CheckResult {
+/// Of the capture's unique addresses, how many resolve as an RPA against one of `irks` — and to
+/// how many distinct IRKs. `(0, _)` when `irks` is empty or nothing resolves.
+fn rpa_resolution(macs: &[String], irks: &[[u8; 16]]) -> (usize, usize) {
+    if irks.is_empty() {
+        return (0, 0);
+    }
+    let unique: HashSet<&String> = macs.iter().collect();
+    let mut resolved = 0;
+    let mut by_irk = HashSet::new();
+    for m in unique {
+        let Some(addr) = crate::rpa::mac_str_to_onair_bytes(m) else {
+            continue;
+        };
+        for (i, irk) in irks.iter().enumerate() {
+            if crate::rpa::resolves(irk, &addr) {
+                resolved += 1;
+                by_irk.insert(i);
+                break;
+            }
+        }
+    }
+    (resolved, by_irk.len())
+}
+
+/// Duration-aware MAC rotation verdict (v1 `check_mac_rotation`). `irks` are IRKs the operator
+/// already holds (own device(s)); addresses that resolve against one are noted as the *same*
+/// device's rotating RPA rather than left as unexplained distinct addresses.
+pub fn check_mac_rotation(info: &CaptureInfo, irks: &[[u8; 16]]) -> CheckResult {
     let id = "mac_rotation".to_string();
     let macs = &info.adv_mac_addresses;
     let unique = macs.iter().collect::<HashSet<_>>().len();
+    let (resolved, by_irk) = rpa_resolution(macs, irks);
+    let rpa_note = |base: String| -> String {
+        if resolved == 0 {
+            return base;
+        }
+        format!(
+            "{base} {resolved} of {unique} unique address(es) resolve as RPAs to {by_irk} given IRK(s)."
+        )
+    };
     let (severity, passed, detail) = if macs.len() < 2 {
         (
             Severity::Info,
@@ -253,10 +288,10 @@ pub fn check_mac_rotation(info: &CaptureInfo) -> CheckResult {
         (
             Severity::Info,
             true,
-            format!(
+            rpa_note(format!(
                 "MAC address rotates ({unique} unique addresses across {} frames).",
                 macs.len()
-            ),
+            )),
         )
     } else {
         match info.duration_seconds {
@@ -399,7 +434,7 @@ mod tests {
         let macs: Vec<_> = (0..5).map(mac).collect();
         let info = parse_capture(&pcap(&macs, &[0, 300, 600, 900, 1200])).unwrap();
         assert_eq!(info.adv_mac_addresses[1], "c0:00:00:00:00:01");
-        let r = check_mac_rotation(&info);
+        let r = check_mac_rotation(&info, &[]);
         assert!(r.passed);
         assert_eq!(r.severity, Severity::Info);
     }
@@ -408,14 +443,54 @@ mod tests {
     fn static_address_over_600s_is_medium() {
         let info = parse_capture(&pcap(&[mac(1); 3], &[0, 300, 700])).unwrap();
         assert_eq!(info.duration_seconds, Some(700.0));
-        let r = check_mac_rotation(&info);
+        let r = check_mac_rotation(&info, &[]);
         assert!(!r.passed);
         assert_eq!(r.severity, Severity::Medium);
     }
 
     #[test]
+    fn rotating_rpas_resolve_to_one_known_irk() {
+        let irk = [
+            0x9b, 0x7d, 0x39, 0x0a, 0xa6, 0x10, 0x10, 0x34, 0x05, 0xad, 0xc8, 0x57, 0xa3, 0x34,
+            0x02, 0xec,
+        ];
+        // Two different RPAs (distinct prand) for the same IRK: on-air = hash(3) || prand(3);
+        // `mac` (display order, per the comment above) is on-air reversed.
+        let addr = |prand: [u8; 3]| -> [u8; 6] {
+            let hash = crate::rpa::ah(&irk, &prand);
+            let mut onair = [0u8; 6];
+            onair[..3].copy_from_slice(&hash);
+            onair[3..].copy_from_slice(&prand);
+            onair
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        };
+        let macs = [addr([0x00, 0x01, 0x40]), addr([0x00, 0x02, 0x40])];
+        let info = parse_capture(&pcap(&macs, &[0, 300])).unwrap();
+        let r = check_mac_rotation(&info, &[irk]);
+        assert!(r.passed);
+        assert!(
+            r.detail
+                .contains("2 of 2 unique address(es) resolve as RPAs to 1 given IRK(s)"),
+            "{}",
+            r.detail
+        );
+        // Without the IRK, no such note.
+        assert!(!check_mac_rotation(&info, &[])
+            .detail
+            .contains("resolve as RPAs"));
+    }
+
+    #[test]
     fn short_capture_is_inconclusive() {
-        let r = check_mac_rotation(&parse_capture(&pcap(&[mac(1); 3], &[0, 5, 30])).unwrap());
+        let r = check_mac_rotation(
+            &parse_capture(&pcap(&[mac(1); 3], &[0, 5, 30])).unwrap(),
+            &[],
+        );
         assert!(!r.passed);
         assert_eq!(r.severity, Severity::Info);
         assert!(r.detail.contains("INCONCLUSIVE"));
