@@ -148,3 +148,19 @@ fn shell_walks_a_capture_and_needs_a_subject() {
     assert_eq!(code, 2);
     assert!(err.contains("--target"), "{err}");
 }
+
+#[test]
+fn repl_commands_are_listed_and_refuse_a_capture_subject() {
+    let (code, out, err) = run(&["shell", "--capture", "mac_rotation.pcap", "-c", "help"]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    assert!(out.contains("ble-doctor commands:"), "{out}");
+    for verb in ["read", "write", "recon", "probe-writes"] {
+        assert!(out.contains(verb), "{verb} missing from help: {out}");
+    }
+    // A capture subject cannot reconnect; each repl command refuses cleanly, no panic.
+    for cmd in ["read", "write x 01", "recon", "probe-writes"] {
+        let (code, out, err) = run(&["shell", "--capture", "mac_rotation.pcap", "-c", cmd]);
+        assert_eq!(code, 2, "{cmd}: {out}{err}");
+        assert!(err.contains("no live target"), "{cmd}: {err}");
+    }
+}

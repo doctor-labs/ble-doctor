@@ -11,7 +11,9 @@ use crate::report::{coverage_gaps, finding, product_score, sanitize};
 use doctor_core::{Envelope, Location, LocationKind, Score};
 use doctor_kit::baseline::Saved;
 use doctor_kit::doctor::PreflightKind;
-use doctor_kit::{Check, Collected, Ctx, Doctor, Node, ScanFailure, TargetKind};
+use doctor_kit::{
+    Check, Collected, Command, Ctx, Doctor, Node, Reply, ScanFailure, Session, TargetKind,
+};
 use serde_json::{json, Value};
 /// `println!` that survives a closed stdout: the preamble must not panic (101) before the kit's
 /// report reaches the same broken pipe and exits 2.
@@ -464,10 +466,52 @@ jobs:
             Subject::None => "-".into(),
         };
         root.meta.insert("target".into(), json!(sanitize(&subject)));
+        // For the repl's own `read`/`write`/`recon`/`probe-writes` commands (Command::run has no
+        // access to `self`): the exact selector a live session connected with, kept separate from
+        // `target` above (a capture's path is not something to reconnect to).
+        if let Subject::Live { target, .. } = &self.subject {
+            root.meta
+                .insert("live_target".into(), json!(sanitize(target)));
+            if let Some(a) = &self.adapter {
+                root.meta.insert("adapter".into(), json!(sanitize(a)));
+            }
+        }
         if let Some(g) = self.gatt.lock().unwrap().as_ref() {
             root.children.push(gatt_node(g));
         }
         root
+    }
+
+    /// `read`/`write`/`recon`/`probe-writes`: the standalone subcommands of the same names
+    /// (#4/#8/#9/#21), reachable from inside `shell`/`explore` against the session's own live
+    /// target (#96), no need to repeat `--target`. No-ops cleanly on a capture subject.
+    fn commands(&self) -> Vec<Command> {
+        vec![
+            Command {
+                name: "read",
+                help: "[uuid]  read eligible characteristics (one, or every readable non-SIG one)",
+                flags: &[],
+                run: repl_read,
+            },
+            Command {
+                name: "write",
+                help: "<uuid> <hex> [--yes]  EMPIRICAL: write then read back (dangerous chars refused)",
+                flags: &["--yes"],
+                run: repl_write,
+            },
+            Command {
+                name: "recon",
+                help: "native GATT inventory of the live target",
+                flags: &[],
+                run: repl_recon,
+            },
+            Command {
+                name: "probe-writes",
+                help: "[--yes]  EMPIRICAL: probe every writable characteristic without bonding",
+                flags: &["--yes"],
+                run: repl_probe_writes,
+            },
+        ]
     }
 
     /// ble's own baseline parsing, kept exactly: a doctor/1 object (a bare array is refused), entries
@@ -537,6 +581,217 @@ jobs:
             .get_or_insert_with(|| self.gather())
             .clone()
     }
+}
+
+/// A fresh scan/select/connect of the shell/explore session's own live target (#96's
+/// `read`/`write`/`recon`/`probe-writes` repl commands): same per-call cost as the standalone
+/// subcommands, just without repeating `--target`. `None` on a capture subject.
+fn repl_connect_target(s: &Session<'_>) -> Result<(String, Option<String>), String> {
+    let root = s.node(Some("/"))?;
+    let target = root
+        .meta
+        .get("live_target")
+        .and_then(|v| v.as_str())
+        .ok_or("no live target in this session (open with `shell --target <addr>`, not --capture)")?
+        .to_string();
+    let adapter = root
+        .meta
+        .get("adapter")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Ok((target, adapter))
+}
+
+/// `read [uuid]`.
+fn repl_read(s: &mut Session<'_>, args: &[String]) -> Result<Reply, String> {
+    let (target, adapter) = repl_connect_target(s)?;
+    let only = args.first().map(|u| u.to_lowercase());
+    let (gi, results) = block(async {
+        use crate::radio::{connect_client, select_target_device, BtleplugCentral};
+        let devs = BtleplugCentral
+            .scan(Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        let d = select_target_device(&devs, &target)
+            .map_err(|e| e.to_string())?
+            .clone();
+        let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+        let c = connect_client(adapter.as_deref(), &d, Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        let svcs = c.services().await.map_err(|e| e.to_string())?;
+        let gi = crate::gatt::extract_gatt_fields(&svcs, &d.id, name.as_deref());
+        let mut chars = crate::probe::read::read_chars(&svcs);
+        if let Some(u) = &only {
+            chars.retain(|c| c.uuid.to_lowercase() == *u);
+        }
+        let results = crate::probe::read::read_values(&c, &chars).await;
+        Ok::<_, String>((gi, results))
+    })?;
+    let _ = gi;
+    if results.is_empty() {
+        return Ok(Reply::text(if only.is_some() {
+            "no such readable characteristic (SIG-assigned and firmware/DFU characteristics are refused)"
+        } else {
+            "nothing eligible to read (no non-SIG, non-DFU READ characteristic)"
+        }));
+    }
+    let lines: Vec<String> = results
+        .iter()
+        .map(|r| {
+            let detail = match &r.outcome {
+                crate::probe::read::ReadOutcome::Value { len, preview } => {
+                    format!("{len} bytes: {}", sanitize(preview))
+                }
+                crate::probe::read::ReadOutcome::Skipped(why) => format!("skipped ({why})"),
+                crate::probe::read::ReadOutcome::Error(e) => format!("error: {}", sanitize(e)),
+            };
+            format!("{}  {detail}", sanitize(&r.uuid))
+        })
+        .collect();
+    Ok(Reply::new(
+        lines.join("\n"),
+        json!({"results": results.iter().map(|r| json!({
+            "uuid": r.uuid, "service_uuid": r.service_uuid, "outcome": format!("{:?}", r.outcome),
+        })).collect::<Vec<_>>()}),
+    ))
+}
+
+/// `write <uuid> <hex> [--yes]`: write then read back. Dangerous (firmware/DFU) characteristics
+/// are always refused, `--yes` is required for everything else (this writes to the device).
+fn repl_write(s: &mut Session<'_>, args: &[String]) -> Result<Reply, String> {
+    let (target, adapter) = repl_connect_target(s)?;
+    let mut args = args.to_vec();
+    let yes = take_flag(&mut args, "--yes");
+    let [uuid, hex] = args.as_slice() else {
+        return Err("usage: write <uuid> <hex> [--yes]".into());
+    };
+    let (uuid, hex) = (uuid.clone(), hex.clone());
+    if !yes {
+        return Ok(Reply::text(
+            "dry-run (add --yes to apply): this EMPIRICALLY writes to the device without bonding",
+        ));
+    }
+    let bytes = parse_hex_bytes(&hex)?;
+    let uuid_lower = uuid.to_lowercase();
+    let out = block(async move {
+        use crate::radio::{connect_client, select_target_device, BtleplugCentral};
+        if crate::probe::write::is_dangerous(&uuid_lower, "") {
+            return Err("refused: firmware/DFU characteristic".to_string());
+        }
+        let devs = BtleplugCentral
+            .scan(Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        let d = select_target_device(&devs, &target)
+            .map_err(|e| e.to_string())?
+            .clone();
+        let c = connect_client(adapter.as_deref(), &d, Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        c.write(&uuid_lower, &bytes)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let read_back = c.read(&uuid_lower).await;
+        Ok::<_, String>(match read_back {
+            Ok(b) => format!(
+                "wrote {} bytes; read back: {}",
+                bytes.len(),
+                sanitize(&crate::probe::read::preview(&b))
+            ),
+            Err(e) => format!("wrote {} bytes; read back failed: {e}", bytes.len()),
+        })
+    })?;
+    Ok(Reply::text(out))
+}
+
+/// `recon`.
+fn repl_recon(s: &mut Session<'_>, _: &[String]) -> Result<Reply, String> {
+    let (target, adapter) = repl_connect_target(s)?;
+    let gi = block(async {
+        use crate::radio::{connect_client, select_target_device, BtleplugCentral};
+        let devs = BtleplugCentral
+            .scan(Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        let d = select_target_device(&devs, &target)
+            .map_err(|e| e.to_string())?
+            .clone();
+        let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+        let c = connect_client(adapter.as_deref(), &d, Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        let svcs = c.services().await.map_err(|e| e.to_string())?;
+        Ok::<_, String>(crate::gatt::extract_gatt_fields(
+            &svcs,
+            &d.id,
+            name.as_deref(),
+        ))
+    })?;
+    let inv = crate::recon::inventory(&gi);
+    let text = crate::recon::render(&inv);
+    Ok(Reply::new(text, json!(inv)))
+}
+
+/// `probe-writes [--yes]`.
+fn repl_probe_writes(s: &mut Session<'_>, args: &[String]) -> Result<Reply, String> {
+    let (target, adapter) = repl_connect_target(s)?;
+    let mut args = args.to_vec();
+    let yes = take_flag(&mut args, "--yes");
+    if !yes {
+        return Ok(Reply::text(
+            "dry-run (add --yes to apply): this EMPIRICALLY writes to every writable \
+             characteristic without bonding (scope: own hardware or written authorization only)",
+        ));
+    }
+    let results = block(async {
+        use crate::radio::{connect_client, select_target_device, BtleplugCentral};
+        let devs = BtleplugCentral
+            .scan(Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        let d = select_target_device(&devs, &target)
+            .map_err(|e| e.to_string())?
+            .clone();
+        let name = d.adv_local_name.clone().or_else(|| d.name.clone());
+        let c = connect_client(adapter.as_deref(), &d, Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        let svcs = c.services().await.map_err(|e| e.to_string())?;
+        let gi = crate::gatt::extract_gatt_fields(&svcs, &d.id, name.as_deref());
+        Ok::<_, String>(crate::probe::write::probe_write_access(&c, &gi.writable_chars, true).await)
+    })?;
+    if results.is_empty() {
+        return Ok(Reply::text("no writable characteristics"));
+    }
+    let lines: Vec<String> = results
+        .iter()
+        .map(|r| format!("{}  {:?}", sanitize(&r.uuid), r.outcome))
+        .collect();
+    Ok(Reply::new(
+        lines.join("\n"),
+        json!({"results": results.iter().map(|r| json!({
+            "uuid": r.uuid, "outcome": format!("{:?}", r.outcome),
+        })).collect::<Vec<_>>()}),
+    ))
+}
+
+/// Remove one `--flag` from `args` (any position) and report whether it was there.
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    let before = args.len();
+    args.retain(|a| a != flag);
+    args.len() != before
+}
+
+fn parse_hex_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    let hex = hex.trim();
+    if !hex.len().is_multiple_of(2) {
+        return Err(format!("odd number of hex digits: {hex}"));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| format!("not hex: {hex}")))
+        .collect()
 }
 
 #[cfg(test)]
@@ -762,5 +1017,66 @@ mod tests {
         env.exit_code = kit_baseline::gate(&d, &env, Severity::High, true);
         let want = report::to_envelope(&r, &loc, dev, Some(&base), 3, extra);
         assert_eq!(env.to_value(), want);
+    }
+
+    /// #96: the four repl commands exist with the help the issue asked for, and a live subject's
+    /// tree carries the `live_target`/`adapter` meta `repl_connect_target` reads (a capture
+    /// subject, which cannot reconnect, does not).
+    #[test]
+    fn repl_commands_and_live_target_meta() {
+        let d = BleDoctor::new(Subject::None, None, Out::Quiet);
+        let names: Vec<&str> = d.commands().iter().map(|c| c.name).collect();
+        assert_eq!(names, ["read", "write", "recon", "probe-writes"]);
+
+        let ctx = Ctx::detached(Default::default(), Severity::High);
+        let live = BleDoctor::new(
+            Subject::Live {
+                target: "AA:BB:CC:DD:EE:FF".into(),
+                timeout: 1,
+            },
+            Some("hci1".into()),
+            Out::Quiet,
+        );
+        *live.cache.lock().unwrap() = Some(Ok(collected(
+            &[],
+            &Location::new(LocationKind::Device, "AA:BB:CC:DD:EE:FF"),
+            "AA:BB:CC:DD:EE:FF",
+            json!({}),
+        )));
+        let env = live.try_scan(&ctx).unwrap();
+        let root = live.tree(&env, &ctx);
+        assert_eq!(root.meta["live_target"], "AA:BB:CC:DD:EE:FF");
+        assert_eq!(root.meta["adapter"], "hci1");
+
+        let cap = BleDoctor::new(Subject::Capture("x.pcap".into()), None, Out::Quiet);
+        *cap.cache.lock().unwrap() = Some(Ok(collected(
+            &[],
+            &Location::new(LocationKind::File, "x.pcap"),
+            "",
+            json!({}),
+        )));
+        let env = cap.try_scan(&ctx).unwrap();
+        let root = cap.tree(&env, &ctx);
+        assert!(
+            !root.meta.contains_key("live_target"),
+            "a capture subject must not claim a live target: {:?}",
+            root.meta
+        );
+    }
+
+    #[test]
+    fn hex_parsing() {
+        assert_eq!(parse_hex_bytes("0102ff").unwrap(), [0x01, 0x02, 0xff]);
+        assert_eq!(parse_hex_bytes("").unwrap(), Vec::<u8>::new());
+        assert!(parse_hex_bytes("abc").is_err(), "odd length");
+        assert!(parse_hex_bytes("zz").is_err(), "not hex");
+    }
+
+    #[test]
+    fn flag_taking() {
+        let mut a = vec!["--yes".to_string(), "x".to_string()];
+        assert!(take_flag(&mut a, "--yes"));
+        assert_eq!(a, ["x"]);
+        assert!(!take_flag(&mut a, "--yes"));
     }
 }
