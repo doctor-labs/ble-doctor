@@ -12,23 +12,8 @@
 //! SMP PDU (`identity_information`'s 16-byte body; a pcap/btsnoop `AdvA` field) — NOT the reversed
 //! colon-notation `fmt_mac` prints for display.
 
-use aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
-use aes::Aes128;
-
-fn swap16(src: &[u8; 16]) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    for i in 0..16 {
-        out[i] = src[15 - i];
-    }
-    out
-}
-
-/// Security toolbox function `e`: AES-128, key and plaintext taken most-significant-octet-first.
 fn e(k: &[u8; 16], r: &[u8; 16]) -> [u8; 16] {
-    let key = Array::from(swap16(k));
-    let mut block = Array::from(swap16(r));
-    Aes128::new(&key).encrypt_block(&mut block);
-    swap16(&block.into())
+    crate::smp::e(k, r)
 }
 
 /// `ah(k, r) = e(k, r') mod 2^24` where `r'` is `r` (the 24-bit `prand`) zero-padded to 128 bits.
