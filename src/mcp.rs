@@ -21,8 +21,8 @@ fn sanitize<'a>(name: &str, v: &'a str) -> Result<&'a str, String> {
 }
 
 /// Build the CLI argv for a whitelisted tool; the only place subcommands are chosen.
-/// `baseline`, `fail_on` and `sarif` pass straight through to the CLI flags of the same name.
-/// Excluded over MCP: `--tui`, `--mtu`, `--as-address`, `--timeout`, `--adapter` (interactive or raw-radio).
+/// `baseline`, `fail_on`, `sarif`, and `as_address` pass straight through to the CLI flags of the same name.
+/// Excluded over MCP: `--tui`, `--mtu`, `--timeout`, `--adapter` (interactive or raw-radio).
 pub fn argv_for(tool: &str, args: &Value) -> Result<Vec<String>, String> {
     let get = |k: &str| args.get(k).and_then(Value::as_str);
     let mut a = match tool {
@@ -44,7 +44,7 @@ pub fn argv_for(tool: &str, args: &Value) -> Result<Vec<String>, String> {
         }
         other => return Err(format!("unknown tool: {other}")),
     };
-    for k in ["baseline", "fail_on", "sarif"] {
+    for k in ["baseline", "fail_on", "sarif", "as_address"] {
         if let Some(v) = get(k).filter(|v| !v.is_empty()) {
             a.push(format!("--{}", k.replace('_', "-")));
             a.push(sanitize(k, v)?.to_string());
@@ -103,7 +103,10 @@ pub fn tools() -> Vec<McpTool> {
         tool(
             "scan",
             "Score a live BLE device by passive GATT enumeration (same doctor/1 JSON as `ble-doctor scan --json`).",
-            json!({"target": {"type": "string"}}),
+            json!({
+                "target": {"type": "string"},
+                "as_address": {"type": "string", "description": "Connect presenting this BLE address (LE Set Random Address; Linux only)"}
+            }),
             None,
         ),
         tool(
@@ -189,8 +192,8 @@ mod tests {
     #[test]
     fn contract_flags_pass_through() {
         assert_eq!(
-            argv_for("analyze", &json!({"capture_file": "c", "baseline": "b.json", "fail_on": "low", "sarif": "o.sarif"})).unwrap(),
-            ["analyze", "c", "--json", "--baseline", "b.json", "--fail-on", "low", "--sarif", "o.sarif"]
+            argv_for("analyze", &json!({"capture_file": "c", "baseline": "b.json", "fail_on": "low", "sarif": "o.sarif", "as_address": "11:22:33:44:55:66"})).unwrap(),
+            ["analyze", "c", "--json", "--baseline", "b.json", "--fail-on", "low", "--sarif", "o.sarif", "--as-address", "11:22:33:44:55:66"]
         );
         assert!(argv_for("scan", &json!({"baseline": "-x"})).is_err());
     }
