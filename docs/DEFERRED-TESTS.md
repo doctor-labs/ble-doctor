@@ -15,6 +15,7 @@ Format: `[ ] #<issue> — <what> — <steps> — <hardware> — <expected>`
 >   on kernel ≤6.12 or a different-chipset dongle.
 
 - [ ] #25 — Injection fuzzing on nRF52 firmware — run fuzz campaign against test firmware — nRF52 dev board — crashes/anomalies are detected and reported
+- [ ] #25/#75/#89 — SweynTooth-class injection campaign (the named cases of #89: ll_version_ind, ll_length_req, malformed_connect_req, ll_enc_req_zero_ltk, channel_map_0, att_sequence, esp32_hci_desync) — flash custom radio firmware on an nRF52 board (or use a Ubertooth One), replay each case at an own target on Linux, record whether the target's stack crashes/hangs or ignores it — needs an injection-capable radio (nRF52 + custom radio firmware, or Ubertooth One) and an own target — expected: per case, "vulnerable" (target misbehaves) or "not vulnerable"; the OFFLINE half is shipped: `ble-doctor fuzz --list` prints the catalog and `ble-doctor fuzz --safe --capture <file>` runs the detection signatures (no radio, no injection); `--injection` refuses until an injection backend exists
 - [ ] Bumble+vhci integration — BLOCKED on this Pi: `hci_vhci` is not built into kernel 6.18.50+rpt-rpi-2712 (no CONFIG_BT_HCIVHCI). Needs a kernel with the module, or a different Linux host.
 - [x] macOS CoreBluetooth manual smoke (cannot virtualize) — done 2026-10-07: `doctor` clean, `scan` discovered real advertisers (names + RSSI) via CoreBluetooth
 - [ ] Windows WinRT manual smoke (cannot virtualize) — needs a Windows host

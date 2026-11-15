@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- `ble-doctor fuzz`: the SweynTooth-class **case catalog** and the **offline detection signatures**
+  (the defensive half #25 offers as its lighter first step). `fuzz --list` prints every named case
+  (#89's list: `ll_version_ind`, `ll_length_req`, `malformed_connect_req`,
+  `ll_enc_req_zero_ltk`, `channel_map_0`, `att_sequence`, `esp32_hci_desync`) with its layer, how it
+  is detected and the hardware it needs; `fuzz --safe --capture <file>` runs the signatures over a
+  capture's SMP PDUs (no radio, no injection); `fuzz --injection` is gated behind
+  `--allow-dangerous` and refuses with the hardware it needs (an nRF52 board running custom radio
+  firmware, or a Ubertooth One) — this build ships no injection backend and no malformed-PDU
+  payloads, per AGENTS.md's "no new exploit code" rule (#75, #89, #25).
 - `analyze` now reports `smp_dhkey_check_skipped`: an LE Secure Connections pairing where both
   sides exchanged their public key but no Pairing DHKey Check followed (Core Spec Vol 3 Part H
   3.5.1) — the peers end up bonded without verifying the derived key. MEDIUM when the capture
