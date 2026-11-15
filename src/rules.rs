@@ -63,6 +63,12 @@ pub const RULES: &[Rule] = &[
         category: "pairing",
     },
     Rule {
+        id: "smp_dhkey_check_skipped",
+        title: "SMP DHKey Check skipped (LE Secure Connections)",
+        severities: &["medium", "info"],
+        category: "pairing",
+    },
+    Rule {
         id: "smp_pairing_failed",
         title: "SMP pairing failed",
         severities: &["info"],
@@ -97,6 +103,10 @@ const DOCS: &[(&str, &str)] = &[
         include_str!("rule_docs/smp_just_works.md"),
     ),
     ("smp_key_size", include_str!("rule_docs/smp_key_size.md")),
+    (
+        "smp_dhkey_check_skipped",
+        include_str!("rule_docs/smp_dhkey_check_skipped.md"),
+    ),
     (
         "smp_pairing_failed",
         include_str!("rule_docs/smp_pairing_failed.md"),

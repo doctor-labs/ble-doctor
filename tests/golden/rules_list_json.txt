@@ -72,6 +72,15 @@ exit: 0
     "category": "pairing"
   },
   {
+    "id": "smp_dhkey_check_skipped",
+    "title": "SMP DHKey Check skipped (LE Secure Connections)",
+    "severities": [
+      "medium",
+      "info"
+    ],
+    "category": "pairing"
+  },
+  {
     "id": "smp_pairing_failed",
     "title": "SMP pairing failed",
     "severities": [

@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- `analyze` now reports `smp_dhkey_check_skipped`: an LE Secure Connections pairing where both
+  sides exchanged their public key but no Pairing DHKey Check followed (Core Spec Vol 3 Part H
+  3.5.1) — the peers end up bonded without verifying the derived key. MEDIUM when the capture
+  holds both public keys, an INFO coverage gap when the capture is too short to tell a skipped
+  check from a partial one. Offline: it is a signature over the SMP PDUs already in the capture,
+  no radio and no injection (#98).
 - `analyze --irk <hex>` (repeatable): resolve Resolvable Private Addresses in a capture against an
   IRK you already hold. `mac_rotation`'s detail now notes when some/all of a capture's rotating
   addresses resolve to a given IRK (one device's legitimately-rotating RPA, not several distinct

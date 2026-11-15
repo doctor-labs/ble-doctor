@@ -392,6 +392,43 @@ pub fn analyze(pdus: &[Vec<u8>]) -> SmpReport {
 
             data["pairing"] = pairing_data;
 
+            // LE Secure Connections: was the DHKey Check actually performed? Each side sends
+            // its public key (PDU 0x0C) and the initiator's DHKey Check (0x0D) must follow.
+            // A capture holding BOTH public keys but no DHKey Check means the check was
+            // skipped: both sides end up bound without ever verifying the derived key.
+            // Fewer public keys than that is a partial capture, not a verdict.
+            if sc {
+                let public_keys = pdus.iter().filter(|p| p.first() == Some(&0x0C)).count();
+                let dhkey_checks = pdus.iter().filter(|p| p.first() == Some(&0x0D)).count();
+                if dhkey_checks > 0 {
+                    r.checks.push(CheckResult::new(
+                        "smp_dhkey_check_skipped",
+                        Severity::Info,
+                        true,
+                        "LE Secure Connections: the DHKey Check was performed.",
+                    ));
+                } else if public_keys >= 2 {
+                    r.checks.push(CheckResult::new(
+                        "smp_dhkey_check_skipped",
+                        Severity::Medium,
+                        false,
+                        "LE Secure Connections: both sides exchanged a public key but no DHKey \
+                         Check followed; the peers are bound without verifying the derived key.",
+                    ));
+                } else {
+                    r.checks.push(
+                        CheckResult::new(
+                            "smp_dhkey_check_skipped",
+                            Severity::Info,
+                            false,
+                            "LE Secure Connections: the capture holds no DHKey Check and too few \
+                             public keys to tell a skipped check from a partial capture.",
+                        )
+                        .inconclusive(),
+                    );
+                }
+            }
+
             let jw = method == "just_works";
             let ksev = if key <= 7 {
                 Severity::High
@@ -453,8 +490,20 @@ mod tests {
         let a = 0x0D; // bonding + MITM + SC
         let r = analyze(&[pair(1, 1, a, 16), pair(2, 1, a, 16)]);
         assert_eq!(r.data["pairing"]["method"], "numeric_comparison");
-        assert!(r.checks.iter().all(|c| c.passed), "{:?}", ids(&r));
         assert_eq!(r.data["pdus"][0]["io_capability"], "DisplayYesNo");
+        // The capture holds no key exchange at all: the DHKey verdict is a coverage gap,
+        // every other check is a pass.
+        let gaps: Vec<_> = r.checks.iter().filter(|c| c.inconclusive).collect();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].id, "smp_dhkey_check_skipped");
+        assert!(
+            r.checks
+                .iter()
+                .filter(|c| !c.inconclusive)
+                .all(|c| c.passed),
+            "{:?}",
+            ids(&r)
+        );
     }
 
     #[test]
@@ -475,6 +524,57 @@ mod tests {
             ]
         );
         assert_eq!(r.data["pairing"]["max_key_size"], 7);
+    }
+
+    #[test]
+    fn sc_pairing_without_dhkey_check_is_flagged() {
+        let a = 0x0D; // bonding + MITM + SC
+        let mut pk = vec![0x0Cu8];
+        pk.extend([0x11u8; 64]);
+        let r = analyze(&[pair(1, 1, a, 16), pair(2, 1, a, 16), pk.clone(), pk]);
+        let c = r
+            .checks
+            .iter()
+            .find(|c| c.id == "smp_dhkey_check_skipped")
+            .expect("dhkey check verdict");
+        assert!(!c.passed && !c.inconclusive);
+        assert_eq!(c.severity, Severity::Medium);
+        assert!(c.detail.contains("no DHKey Check"));
+    }
+
+    #[test]
+    fn sc_pairing_with_dhkey_check_passes() {
+        let a = 0x0D;
+        let mut pk = vec![0x0Cu8];
+        pk.extend([0x11u8; 64]);
+        let mut dh = vec![0x0Du8];
+        dh.extend([0x22u8; 16]);
+        let r = analyze(&[pair(1, 1, a, 16), pair(2, 1, a, 16), pk.clone(), pk, dh]);
+        let c = r
+            .checks
+            .iter()
+            .find(|c| c.id == "smp_dhkey_check_skipped")
+            .expect("dhkey check verdict");
+        assert!(c.passed && !c.inconclusive);
+    }
+
+    #[test]
+    fn sc_pairing_without_public_keys_is_inconclusive() {
+        let a = 0x0D;
+        let r = analyze(&[pair(1, 1, a, 16), pair(2, 1, a, 16)]);
+        let c = r
+            .checks
+            .iter()
+            .find(|c| c.id == "smp_dhkey_check_skipped")
+            .expect("dhkey check verdict");
+        assert!(!c.passed && c.inconclusive);
+        assert_eq!(c.severity, Severity::Info);
+    }
+
+    #[test]
+    fn legacy_pairing_has_no_dhkey_verdict() {
+        let r = analyze(&[pair(1, 3, 1, 16), pair(2, 3, 1, 16)]);
+        assert!(!r.checks.iter().any(|c| c.id == "smp_dhkey_check_skipped"));
     }
 
     #[test]
