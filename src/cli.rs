@@ -223,6 +223,35 @@ pub struct MitmArgs {
     allow_dangerous: bool,
 }
 
+/// `fuzz` arguments: the SweynTooth-class case catalog plus the offline
+/// detection signatures. Injection mode is hardware-gated (see `src/fuzz.rs`).
+#[derive(Args, Debug)]
+pub struct FuzzArgs {
+    /// List the case catalog (what is detected offline, what needs injection) and exit
+    #[arg(long, conflicts_with = "capture")]
+    list: bool,
+    /// Run the offline detection signatures over this btsnoop/pcap capture
+    #[arg(long)]
+    capture: Option<std::path::PathBuf>,
+    /// Safe mode: detection signatures only, no injection (the default)
+    #[arg(long)]
+    safe: bool,
+    /// Injection mode: drive malformed link-layer PDUs at a target (needs an
+    /// injection-capable radio; this build ships no injection backend)
+    #[arg(long, conflicts_with = "capture")]
+    injection: bool,
+    /// The injection radio's serial port (e.g. /dev/ttyACM0 on an nRF52 board)
+    #[arg(long, requires = "injection")]
+    injector: Option<String>,
+    /// Required: this sends malformed link-layer PDUs to a live target
+    /// (scope: own hardware or written authorization only)
+    #[arg(long, requires = "injection")]
+    allow_dangerous: bool,
+    /// Emit JSON
+    #[arg(long)]
+    json: bool,
+}
+
 /// `ctf` subcommands: brute-write / read-N / write-then-read against a
 /// characteristic, carried over from v1's `solve_macos.py` helper patterns.
 /// Own-gear / CTF scope only; never wired into `mcp`.
@@ -358,6 +387,7 @@ fn about(name: &str) -> &'static str {
         "shell" => "Interactive shell over a live device or a capture",
         "explore" => "Full-screen explorer over a live device or a capture",
         "mitm" => "GATT MITM: clone the target as a peripheral and relay+log traffic to/from it (Linux + 2 adapters + peripheral mode only; EMPIRICAL/active)",
+        "fuzz" => "SweynTooth-class case catalog + offline detection signatures (injection needs an injection-capable radio)",
         _ => unreachable!("{name}"),
     }
 }
@@ -465,6 +495,7 @@ pub fn extensions() -> Extensions<BleDoctor> {
                 run: explore,
             },
             ext!(18, "serve", ServeArgs, serve_cmd),
+            ext!(19, "fuzz", FuzzArgs, fuzz),
         ],
         global_args: vec![Arg::new("adapter")
             .long("adapter")
@@ -533,6 +564,8 @@ fn build(m: &ArgMatches) -> Result<BleDoctor, String> {
             s.get_one::<String>("target").cloned(),
             s.get_one::<u64>("timeout").copied().unwrap_or(5),
         ),
+        // `fuzz` is offline (a capture) or a catalog: never a live radio.
+        Some(("fuzz", _)) => Subject::None,
         _ => live(std::env::var("BLE_DOCTOR_TARGET").ok(), 5),
     };
     // The shell keeps stdout for its replies (the device list goes to stderr); the explorer owns the
@@ -1237,6 +1270,118 @@ fn mitm(_: &BleDoctor, args: &MitmArgs) -> Result<u8, String> {
          not available on this platform."
     );
     fail();
+}
+
+/// `fuzz`: the SweynTooth-class case catalog, the offline detection signatures
+/// over a capture, and the injection mode (hardware-gated: this build has no
+/// injection backend, so it refuses and names the hardware it needs).
+fn fuzz(_: &BleDoctor, args: &FuzzArgs) -> Result<u8, String> {
+    let FuzzArgs {
+        list,
+        capture,
+        safe,
+        injection,
+        injector,
+        allow_dangerous,
+        json,
+    } = args;
+    let _ = safe; // safe mode is the default; the flag only documents the intent.
+    if *injection {
+        if !*allow_dangerous {
+            eprintln!(
+                "fuzz: refused. --injection drives malformed link-layer PDUs at a live target \
+                 (scope: own hardware or written authorization only). Pass --allow-dangerous to \
+                 proceed."
+            );
+            fail();
+        }
+        eprintln!(
+            "fuzz: {}\n  fix: flash custom radio firmware on an nRF52 board (or use a Ubertooth \
+             One) and point --injector at its serial port; the campaign is recorded in \
+             docs/DEFERRED-TESTS.md.",
+            crate::fuzz::injection_refusal()
+        );
+        if let Some(p) = injector {
+            eprintln!("fuzz: injector: {p}");
+        }
+        fail();
+    }
+    let cases = crate::fuzz::cases();
+    let checks = match capture {
+        Some(path) => {
+            let bytes =
+                std::fs::read(path).map_err(|e| format!("fuzz: {}: {e}", path.display()))?;
+            let info = crate::capture::parse_capture(&bytes).map_err(|e| format!("fuzz: {e}"))?;
+            crate::fuzz::run_signatures(&info.smp_pdus)
+        }
+        None => vec![],
+    };
+    if *json {
+        let cases_json: Vec<_> = cases
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "title": c.title,
+                    "layer": c.layer.as_str(),
+                    "summary": c.summary,
+                    "detection": match c.detection {
+                        crate::fuzz::Detection::Signature(id) => serde_json::json!({"signature": id}),
+                        crate::fuzz::Detection::InjectionOnly => serde_json::json!("injection-only"),
+                    },
+                    "hardware": c.hardware,
+                })
+            })
+            .collect();
+        let v = serde_json::json!({
+            "mode": "safe",
+            "cases": cases_json,
+            "checks": checks,
+            "injection": {
+                "enabled": false,
+                "hardware": crate::fuzz::INJECTION_HARDWARE,
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        return Ok(0);
+    }
+    if !list && capture.is_none() {
+        println!(
+            "fuzz: {} case(s): {} offline signature(s), {} need injection hardware",
+            cases.len(),
+            crate::fuzz::signature_cases().count(),
+            crate::fuzz::injection_cases().count()
+        );
+    }
+    for c in cases {
+        let det = match c.detection {
+            crate::fuzz::Detection::Signature(id) => format!("signature {id}"),
+            crate::fuzz::Detection::InjectionOnly => "injection-only".to_string(),
+        };
+        println!(
+            "  {:<24} {:<4} {:<28} {}",
+            c.id,
+            c.layer.as_str(),
+            det,
+            c.summary
+        );
+    }
+    if capture.is_some() {
+        println!(
+            "fuzz: {} signature finding(s)",
+            checks.iter().filter(|c| !c.passed).count()
+        );
+        for c in &checks {
+            let tag = if c.passed { "PASS" } else { "FAIL" };
+            println!(
+                "[{tag}] {:?} {}: {}",
+                c.severity,
+                san(&c.id),
+                san(&c.detail)
+            );
+        }
+    }
+    Ok(0)
 }
 
 fn serve_cmd(_: &BleDoctor, args: &ServeArgs) -> Result<u8, String> {

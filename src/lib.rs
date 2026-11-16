@@ -9,6 +9,7 @@ pub mod ctf;
 pub mod doctor;
 pub mod error;
 pub mod fingerprint;
+pub mod fuzz;
 pub mod gatt;
 pub mod handoff;
 pub mod hci_lmp;

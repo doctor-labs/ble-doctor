@@ -109,6 +109,40 @@ fn fix_builds_a_prompt_from_a_saved_report() {
 }
 
 #[test]
+fn fuzz_lists_the_catalog_and_runs_the_offline_signatures() {
+    let (code, out, err) = run(&["fuzz", "--list", "--json"]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let cases = v["cases"].as_array().unwrap();
+    assert!(cases.iter().any(|c| c["id"] == "ll_version_ind"), "{out}");
+    assert!(
+        cases
+            .iter()
+            .any(|c| c["detection"]["signature"] == "smp_legacy_pairing"),
+        "{out}"
+    );
+    assert_eq!(v["injection"]["enabled"].as_bool(), Some(false), "{out}");
+
+    // Safe mode over a capture: the SMP signatures fire, no radio is touched.
+    let (code, out, err) = run(&["fuzz", "--safe", "--capture", "smp_legacy.btsnoop"]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    assert!(out.contains("smp_legacy_pairing"), "{out}");
+    assert!(out.contains("smp_just_works"), "{out}");
+}
+
+#[test]
+fn fuzz_injection_needs_the_gate_and_names_the_hardware() {
+    // Without the gate: refused before anything else.
+    let (code, out, err) = run(&["fuzz", "--injection"]);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.contains("--allow-dangerous"), "{err}");
+    // With the gate: still no injection backend in this build, and it says what it needs.
+    let (code, out, err) = run(&["fuzz", "--injection", "--allow-dangerous"]);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.contains("nRF52") && err.contains("Ubertooth"), "{err}");
+}
+
+#[test]
 fn shell_walks_a_capture_and_needs_a_subject() {
     let (code, out, err) = run(&[
         "shell",
