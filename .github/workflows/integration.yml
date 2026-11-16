@@ -1,27 +1,58 @@
 name: Integration (vhci)
+
 on:
   push:
     branches: [main]
   pull_request:
+
 jobs:
   integration-vhci:
-    # Disabled until the Pi runner is registered. Enable: set repo variable VHCI_RUNNER=true (see docs/CI.md).
+    # Disabled until a self-hosted runner with vhci + BLE hardware is registered.
+    # Enable by setting repository variable VHCI_RUNNER=true (see docs/CI.md and
+    # docs/self-hosted-runner.md). Only enable on a repo that does not accept
+    # untrusted fork PRs on this runner.
     if: ${{ vars.VHCI_RUNNER == 'true' }}
     runs-on: [self-hosted, linux, bluetooth]
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check vhci and hardware prerequisites
+        run: bash scripts/check-vhci-prereqs.sh
+        shell: bash
+
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install bumble + load hci_vhci
+
+      - name: Install Bumble
         run: |
-          python3 -m pip install --user bumble
-          sudo modprobe hci_vhci
-          test -c /dev/vhci
+          set -euo pipefail
+          python3 -m pip install --user --upgrade bumble
+        shell: bash
+
+      - name: Load hci_vhci and verify /dev/vhci
+        run: |
+          set -euo pipefail
+          if ! sudo modprobe hci_vhci; then
+            echo "::error::modprobe hci_vhci failed. The runner kernel must provide CONFIG_BT_HCIVHCI (built-in or module)."
+            echo "See docs/self-hosted-runner.md for hard requirements."
+            exit 1
+          fi
+          if [ ! -c /dev/vhci ]; then
+            echo "::error::/dev/vhci is missing after modprobe hci_vhci. vhci integration cannot run on this host."
+            exit 1
+          fi
+          echo "vhci device present: /dev/vhci"
+        shell: bash
+
       - name: Radio integration tests (#[ignore]d)
         run: cargo test -- --ignored 2>&1 | tee integration.log
         shell: bash
+
       - name: Guard - integration tests must actually run
         run: |
           if ! grep -qE "test result: ok\. [1-9][0-9]* passed" integration.log; then
-            echo "::error::no integration test passed (skipped or none ran) - vhci/bumble not usable here."
+            echo "::error::no integration test passed (skipped or none ran) - vhci/bumble/hardware not usable on this runner."
+            echo "Refusing to report success: the integration job requires at least one passing #[ignore]d radio test."
             exit 1
           fi
+        shell: bash

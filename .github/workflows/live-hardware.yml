@@ -1,0 +1,49 @@
+name: Live BLE hardware (self-hosted)
+
+on:
+  # Disabled by default: this job requires a self-hosted runner with real BLE hardware
+  # and a vhci-capable kernel (see docs/live-hardware-runner.md). Enable deliberately by
+  # setting repository variable LIVE_BLE_HARDWARE_RUNNER=true on a trusted repo/runner.
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  live-ble-hardware:
+    if: ${{ vars.LIVE_BLE_HARDWARE_RUNNER == 'true' }}
+    runs-on: [self-hosted, linux, ble-hardware]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check live BLE hardware prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! bash scripts/check-vhci-prereqs.sh; then
+            echo "::error::Live BLE hardware prerequisites are missing. Refusing to start: this runner must provide CONFIG_BT_HCIVHCI, hci_vhci/loadable vhci, /dev/bus/usb passthrough, and an enumerated BLE adapter. See docs/live-hardware-runner.md."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (best effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y libdbus-1-dev pkg-config bluez usbutils
+          fi
+
+      - name: Run live BLE hardware job
+        shell: bash
+        run: bash scripts/run-live-ble-job.sh
+
+      - name: Upload live BLE results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-ble-hardware-results
+          path: artifacts/live-ble-hardware
+          if-no-files-found: warn
