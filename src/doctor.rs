@@ -25,6 +25,67 @@ pub struct Probes {
     pub adapter_powered: Option<bool>,
     pub permission_ok: Option<bool>,
     pub daemon_running: Option<bool>,
+    /// Live hardware runner rig prerequisites (Linux/self-hosted CI).
+    pub vhci_config_available: Option<bool>,
+    pub vhci_device_present: Option<bool>,
+    pub usb_bus_present: Option<bool>,
+}
+
+fn detect_vhci_config_available() -> Option<bool> {
+    // modinfo is strong evidence the module is available for this kernel.
+    if let Ok(out) = std::process::Command::new("modinfo")
+        .arg("hci_vhci")
+        .output()
+    {
+        if out.status.success() {
+            return Some(true);
+        }
+    }
+    let krel = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let candidates = [
+        "/proc/config.gz".to_string(),
+        format!("/boot/config-{krel}"),
+        format!("/lib/modules/{krel}/build/.config"),
+    ];
+    let mut saw_unset = false;
+    for p in candidates {
+        let path = std::path::Path::new(&p);
+        if !path.is_file() {
+            continue;
+        }
+        let content = if p.ends_with(".gz") {
+            // avoid adding deps; best-effort only
+            std::process::Command::new("zcat")
+                .arg(path)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+        } else {
+            std::fs::read_to_string(path).ok()
+        };
+        if let Some(c) = content {
+            if c.lines()
+                .any(|l| l == "CONFIG_BT_HCIVHCI=y" || l == "CONFIG_BT_HCIVHCI=m")
+            {
+                return Some(true);
+            }
+            if c.lines().any(|l| l == "# CONFIG_BT_HCIVHCI is not set") {
+                saw_unset = true;
+            }
+        }
+    }
+    if saw_unset {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 impl Probes {
@@ -41,6 +102,9 @@ impl Probes {
                 .output()
                 .ok()
                 .map(|o| o.status.success());
+            p.usb_bus_present = Some(std::path::Path::new("/dev/bus/usb").is_dir());
+            p.vhci_device_present = Some(std::path::Path::new("/dev/vhci").exists());
+            p.vhci_config_available = detect_vhci_config_available();
         }
         p
     }
@@ -129,6 +193,87 @@ pub fn run_doctor(p: &Probes, platform: Platform) -> Vec<CheckResult> {
             ),
             None => res("daemon", Status::Warn, "bluetoothd state unknown", None),
         });
+
+        out.push(match p.vhci_config_available {
+            Some(true) => res(
+                "live_runner:vhci_kernel",
+                Status::Ok,
+                "CONFIG_BT_HCIVHCI / hci_vhci available",
+                None,
+            ),
+            Some(false) => res(
+                "live_runner:vhci_kernel",
+                Status::Warn,
+                "CONFIG_BT_HCIVHCI / hci_vhci not available (required for self-hosted live BLE hardware CI runner)",
+                Some("Guidance: boot a kernel with CONFIG_BT_HCIVHCI (module or built-in) and make hci_vhci loadable."),
+            ),
+            None => res(
+                "live_runner:vhci_kernel",
+                Status::Warn,
+                "vhci kernel support unknown (required for self-hosted live BLE hardware CI runner)",
+                Some("Guidance: ensure CONFIG_BT_HCIVHCI is enabled (modinfo hci_vhci or kernel config)."),
+            ),
+        });
+        out.push(match p.vhci_device_present {
+            Some(true) => res(
+                "live_runner:vhci_device",
+                Status::Ok,
+                "/dev/vhci present",
+                None,
+            ),
+            Some(false) => res(
+                "live_runner:vhci_device",
+                Status::Warn,
+                "/dev/vhci not present (required for self-hosted live BLE hardware CI runner)",
+                Some("Run: sudo modprobe hci_vhci (and grant passwordless modprobe to the runner user if needed)"),
+            ),
+            None => res(
+                "live_runner:vhci_device",
+                Status::Warn,
+                "/dev/vhci state unknown (required for self-hosted live BLE hardware CI runner)",
+                Some("Guidance: load hci_vhci so /dev/vhci is available."),
+            ),
+        });
+        out.push(match p.usb_bus_present {
+            Some(true) => res(
+                "live_runner:usb_bus",
+                Status::Ok,
+                "/dev/bus/usb present",
+                None,
+            ),
+            Some(false) => res(
+                "live_runner:usb_bus",
+                Status::Warn,
+                "/dev/bus/usb not present (required for self-hosted live BLE hardware CI runner)",
+                Some("Guidance: provide USB passthrough for a BLE adapter to the runner host/VM."),
+            ),
+            None => res(
+                "live_runner:usb_bus",
+                Status::Warn,
+                "USB bus state unknown (required for self-hosted live BLE hardware CI runner)",
+                Some("Guidance: ensure /dev/bus/usb is available via USB passthrough."),
+            ),
+        });
+        out.push(match p.adapter_present {
+            Some(true) => res(
+                "live_runner:ble_adapter",
+                Status::Ok,
+                "BLE adapter enumerated",
+                None,
+            ),
+            Some(false) => res(
+                "live_runner:ble_adapter",
+                Status::Warn,
+                "no BLE adapter enumerated (required for self-hosted live BLE hardware CI runner)",
+                Some(BleError::AdapterNotFound.remediation()),
+            ),
+            None => res(
+                "live_runner:ble_adapter",
+                Status::Warn,
+                "BLE adapter enumeration unknown (required for self-hosted live BLE hardware CI runner)",
+                Some(BleError::AdapterNotFound.remediation()),
+            ),
+        });
     }
 
     for f in ALL_FEATURES {
@@ -178,6 +323,9 @@ mod tests {
             adapter_powered: Some(true),
             permission_ok: Some(true),
             daemon_running: Some(true),
+            vhci_config_available: Some(true),
+            vhci_device_present: Some(true),
+            usb_bus_present: Some(true),
         }
     }
 
@@ -188,8 +336,16 @@ mod tests {
     #[test]
     fn healthy_linux_all_ok() {
         let r = run_doctor(&good(), Platform::Linux);
-        for n in ["adapter", "permission", "daemon"] {
-            assert_eq!(get(&r, n).status, Status::Ok);
+        for n in [
+            "adapter",
+            "permission",
+            "daemon",
+            "live_runner:vhci_kernel",
+            "live_runner:vhci_device",
+            "live_runner:usb_bus",
+            "live_runner:ble_adapter",
+        ] {
+            assert_eq!(get(&r, n).status, Status::Ok, "{n}");
         }
     }
 
@@ -247,14 +403,23 @@ mod tests {
     }
 
     #[test]
-    fn ordering_adapter_permission_daemon_features() {
+    fn ordering_adapter_permission_daemon_live_runner_features() {
         let r = run_doctor(&good(), Platform::Linux);
         let names: Vec<&str> = r.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
-            &names[..4],
-            ["adapter", "permission", "daemon", "feature:Scan"]
+            &names[..8],
+            [
+                "adapter",
+                "permission",
+                "daemon",
+                "live_runner:vhci_kernel",
+                "live_runner:vhci_device",
+                "live_runner:usb_bus",
+                "live_runner:ble_adapter",
+                "feature:Scan",
+            ]
         );
-        assert_eq!(r.len(), 3 + ALL_FEATURES.len());
+        assert_eq!(r.len(), 3 + 4 + ALL_FEATURES.len());
     }
 
     #[test]
@@ -272,5 +437,37 @@ mod tests {
             ..good()
         };
         assert_eq!(print_report(&run_doctor(&p, Platform::MacOs)), 1);
+    }
+
+    #[test]
+    fn live_runner_prereqs_reported_on_linux() {
+        let p = Probes {
+            vhci_config_available: Some(false),
+            vhci_device_present: Some(false),
+            usb_bus_present: Some(false),
+            ..good()
+        };
+        let r = run_doctor(&p, Platform::Linux);
+        for n in [
+            "live_runner:vhci_kernel",
+            "live_runner:vhci_device",
+            "live_runner:usb_bus",
+        ] {
+            let c = get(&r, n);
+            assert_eq!(c.status, Status::Warn, "{n}");
+            assert!(
+                c.detail
+                    .contains("required for self-hosted live BLE hardware CI runner"),
+                "{n}: {}",
+                c.detail
+            );
+            assert!(c.fix.is_some(), "{n} should include remediation");
+        }
+    }
+
+    #[test]
+    fn live_runner_prereqs_absent_on_non_linux() {
+        let r = run_doctor(&good(), Platform::MacOs);
+        assert!(!r.iter().any(|c| c.name.starts_with("live_runner:")));
     }
 }
